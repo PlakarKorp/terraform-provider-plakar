@@ -94,6 +94,7 @@ func (p *plakarProvider) Resources(_ context.Context) []func() resource.Resource
 	return []func() resource.Resource{
 		NewStoreResource,
 		NewConnectorResource,
+		NewScheduleResource,
 	}
 }
 

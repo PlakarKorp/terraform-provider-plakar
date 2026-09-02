@@ -29,6 +29,9 @@ type Client struct {
 	mu     sync.Mutex
 	badges map[string]string // org key ("" = the key's own org) -> token
 	orgID  string            // resolved via /account/me when not configured
+
+	// taskMu serializes scheduler-task mutations; see schedule.go.
+	taskMu sync.Mutex
 }
 
 func New(apiURL, apiKey, organizationID string) *Client {
