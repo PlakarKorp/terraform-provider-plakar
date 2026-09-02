@@ -12,9 +12,32 @@ import (
 	"github.com/PlakarKorp/terraform-provider-plakar/internal/client"
 )
 
-// connectorRequestFromModel builds a create request from the plan. The caller
+// connectorFacet is the connector-shaped slice both the store and connector
+// models expose, so the request-building and refresh logic exists once.
+type connectorFacet struct {
+	Name        *types.String
+	Integration *types.String
+	Protocol    *types.String
+	Resource    *types.String
+	URNID       *types.String
+	Fields      *types.Map
+	Environment *types.String
+	DataClasses *types.List
+	Temperature *types.String
+}
+
+func (m *storeModel) facet() *connectorFacet {
+	return &connectorFacet{
+		Name: &m.Name, Integration: &m.Integration, Protocol: &m.Protocol,
+		Resource: &m.Resource, URNID: &m.URNID, Fields: &m.Fields,
+		Environment: &m.Environment, DataClasses: &m.DataClasses,
+		Temperature: &m.Temperature,
+	}
+}
+
+// connectorRequestFromFacet builds a create request from the plan. The caller
 // fills URNID and Integration.ID from the resolved lookups.
-func connectorRequestFromModel(ctx context.Context, m *storeModel, kind string, diags *diag.Diagnostics) *client.ConnectorRequest {
+func connectorRequestFromFacet(ctx context.Context, m *connectorFacet, kind string, diags *diag.Diagnostics) *client.ConnectorRequest {
 	req := &client.ConnectorRequest{
 		Name:        m.Name.ValueString(),
 		Type:        kind,
@@ -38,7 +61,7 @@ func connectorRequestFromModel(ctx context.Context, m *storeModel, kind string, 
 // mergeConnectorRequest builds v1's full-body update: the connector's current
 // state, with the plan's managed values written over it. Fields the plan does
 // not name keep their server-side values.
-func mergeConnectorRequest(ctx context.Context, m *storeModel, current *client.Connector, kind string, diags *diag.Diagnostics) *client.ConnectorRequest {
+func mergeConnectorRequest(ctx context.Context, m *connectorFacet, current *client.Connector, kind string, diags *diag.Diagnostics) *client.ConnectorRequest {
 	req := &client.ConnectorRequest{
 		Name:        m.Name.ValueString(),
 		Type:        kind,
@@ -66,7 +89,7 @@ func mergeConnectorRequest(ctx context.Context, m *storeModel, current *client.C
 	if !m.Environment.IsNull() {
 		req.Environment = m.Environment.ValueString()
 	}
-	if !m.Temperature.IsNull() {
+	if !m.Temperature.IsNull() && !m.Temperature.IsUnknown() {
 		req.Temperature = m.Temperature.ValueString()
 	}
 	if !m.DataClasses.IsNull() && !m.DataClasses.IsUnknown() {
@@ -82,35 +105,35 @@ func mergeConnectorRequest(ctx context.Context, m *storeModel, current *client.C
 	return req
 }
 
-// refreshModelFromConnector maps a read connector back onto the model. Only
+// refreshFacetFromConnector maps a read connector back onto the model. Only
 // the field keys the practitioner declared are refreshed — the rest of the
 // server-side map is not our contract. Attributes that are null in state stay
 // null when the server reports an empty value, so optional attributes do not
 // oscillate between null and "".
-func refreshModelFromConnector(ctx context.Context, m *storeModel, conn *client.Connector, diags *diag.Diagnostics) {
-	m.Name = types.StringValue(conn.Name)
-	m.Protocol = types.StringValue(conn.Protocol)
+func refreshFacetFromConnector(ctx context.Context, m *connectorFacet, conn *client.Connector, diags *diag.Diagnostics) {
+	*m.Name = types.StringValue(conn.Name)
+	*m.Protocol = types.StringValue(conn.Protocol)
 	if conn.Integration.Name != "" {
-		m.Integration = types.StringValue(conn.Integration.Name)
+		*m.Integration = types.StringValue(conn.Integration.Name)
 	}
 	if conn.Resource != nil {
-		m.URNID = types.StringValue(conn.Resource.URNID)
+		*m.URNID = types.StringValue(conn.Resource.URNID)
 		// `resource` is practitioner input (URN or name); after an import the
 		// state has nothing better than the URN.
 		if m.Resource.IsNull() {
-			m.Resource = types.StringValue(conn.Resource.URN)
+			*m.Resource = types.StringValue(conn.Resource.URN)
 		}
 	}
 
 	if !(m.Environment.IsNull() && conn.Environment == "") {
-		m.Environment = stringOrNull(conn.Environment, m.Environment)
+		*m.Environment = stringOrNull(conn.Environment, *m.Environment)
 	}
 	// temperature is Optional+Computed (the server assigns one when the config
 	// does not): always adopt the server value.
 	if conn.Temperature != "" {
-		m.Temperature = types.StringValue(conn.Temperature)
+		*m.Temperature = types.StringValue(conn.Temperature)
 	} else {
-		m.Temperature = types.StringNull()
+		*m.Temperature = types.StringNull()
 	}
 
 	if !m.DataClasses.IsNull() || len(conn.DataClasses) > 0 {
@@ -120,7 +143,7 @@ func refreshModelFromConnector(ctx context.Context, m *storeModel, conn *client.
 		}
 		list, d := types.ListValueFrom(ctx, types.StringType, dcs)
 		diags.Append(d...)
-		m.DataClasses = list
+		*m.DataClasses = list
 	}
 
 	if m.Fields.IsNull() || m.Fields.IsUnknown() {
@@ -131,7 +154,7 @@ func refreshModelFromConnector(ctx context.Context, m *storeModel, conn *client.
 		}
 		mv, d := types.MapValueFrom(ctx, types.StringType, all)
 		diags.Append(d...)
-		m.Fields = mv
+		*m.Fields = mv
 		return
 	}
 	declared := map[string]string{}
@@ -143,7 +166,7 @@ func refreshModelFromConnector(ctx context.Context, m *storeModel, conn *client.
 	}
 	mv, d := types.MapValueFrom(ctx, types.StringType, declared)
 	diags.Append(d...)
-	m.Fields = mv
+	*m.Fields = mv
 }
 
 func stringOrNull(server string, prior types.String) types.String {

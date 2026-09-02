@@ -93,9 +93,15 @@ func (p *plakarProvider) Configure(ctx context.Context, req provider.ConfigureRe
 func (p *plakarProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewStoreResource,
+		NewConnectorResource,
 	}
 }
 
 func (p *plakarProvider) DataSources(_ context.Context) []func() datasource.DataSource {
-	return nil
+	return []func() datasource.DataSource{
+		NewResourceDataSource,
+		NewIntegrationDataSource,
+		NewStoreDataSource,
+		NewConnectorDataSource,
+	}
 }

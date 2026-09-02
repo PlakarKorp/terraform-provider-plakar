@@ -7,27 +7,28 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/PlakarKorp/terraform-provider-plakar/internal/client"
 )
 
-// storeResource manages a Plakar store: a connector of type store, with the
-// underlying storage initialized at creation.
-type storeResource struct {
+// connectorResource manages a source or destination connector. Stores have
+// their own resource, plakar_store, which also initializes the storage.
+type connectorResource struct {
 	client *client.Client
 }
 
-type storeModel struct {
+type connectorModel struct {
 	ID          types.String `tfsdk:"id"`
 	Name        types.String `tfsdk:"name"`
+	Type        types.String `tfsdk:"type"`
 	Integration types.String `tfsdk:"integration"`
 	Protocol    types.String `tfsdk:"protocol"`
 	Resource    types.String `tfsdk:"resource"`
@@ -36,23 +37,28 @@ type storeModel struct {
 	Environment types.String `tfsdk:"environment"`
 	DataClasses types.List   `tfsdk:"data_classes"`
 	Temperature types.String `tfsdk:"temperature"`
-	Initialize  types.Bool   `tfsdk:"initialize"`
-	Compression types.String `tfsdk:"compression"`
 }
 
-func NewStoreResource() resource.Resource {
-	return &storeResource{}
+func (m *connectorModel) facet() *connectorFacet {
+	return &connectorFacet{
+		Name: &m.Name, Integration: &m.Integration, Protocol: &m.Protocol,
+		Resource: &m.Resource, URNID: &m.URNID, Fields: &m.Fields,
+		Environment: &m.Environment, DataClasses: &m.DataClasses,
+		Temperature: &m.Temperature,
+	}
 }
 
-func (r *storeResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + "_store"
+func NewConnectorResource() resource.Resource {
+	return &connectorResource{}
 }
 
-func (r *storeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+func (r *connectorResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_connector"
+}
+
+func (r *connectorResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "A Plakar store — where backup data lands. Destroying the " +
-			"resource removes the store from Plakar; data in the underlying " +
-			"storage is not touched.",
+		Description: "A Plakar source or destination connector. For stores, use plakar_store.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:      true,
@@ -60,11 +66,21 @@ func (r *storeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 			},
 			"name": schema.StringAttribute{
 				Required:    true,
-				Description: "Name of the store, unique among stores in the organization.",
+				Description: "Name of the connector, unique per connector type in the organization.",
+			},
+			"type": schema.StringAttribute{
+				Required:    true,
+				Description: "What the connector is used for: source or destination.",
+				Validators: []validator.String{
+					stringvalidator.OneOf("source", "destination"),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"integration": schema.StringAttribute{
 				Required:    true,
-				Description: "Name of the installed integration backing the store, e.g. s3.",
+				Description: "Name of the installed integration backing the connector, e.g. s3 or sftp.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -80,7 +96,7 @@ func (r *storeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 			},
 			"resource": schema.StringAttribute{
 				Required:    true,
-				Description: "URN or name of the inventory resource the store attaches to.",
+				Description: "URN or name of the inventory resource the connector attaches to.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -105,7 +121,7 @@ func (r *storeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 			"data_classes": schema.ListAttribute{
 				Optional:    true,
 				ElementType: types.StringType,
-				Description: "Data classes the store accepts.",
+				Description: "Data classes the connector carries.",
 			},
 			"temperature": schema.StringAttribute{
 				Optional: true,
@@ -116,27 +132,11 @@ func (r *storeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
-			"initialize": schema.BoolAttribute{
-				Optional:    true,
-				Computed:    true,
-				Default:     booldefault.StaticBool(true),
-				Description: "Initialize the underlying storage at creation. Never re-runs on update.",
-				PlanModifiers: []planmodifier.Bool{
-					boolplanmodifier.UseStateForUnknown(),
-				},
-			},
-			"compression": schema.StringAttribute{
-				Optional:    true,
-				Description: "Compression for the store at initialization (GZIP, LZ4, ZSTD). Unset keeps the engine's default.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
-			},
 		},
 	}
 }
 
-func (r *storeResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+func (r *connectorResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	if req.ProviderData == nil {
 		return
 	}
@@ -148,8 +148,8 @@ func (r *storeResource) Configure(_ context.Context, req resource.ConfigureReque
 	r.client = c
 }
 
-func (r *storeResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var plan storeModel
+func (r *connectorResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan connectorModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -166,47 +166,35 @@ func (r *storeResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
-	creq := connectorRequestFromFacet(ctx, plan.facet(), "store", &resp.Diagnostics)
+	kind := plan.Type.ValueString()
+	creq := connectorRequestFromFacet(ctx, plan.facet(), kind, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 	creq.URNID = res.URNID
 	creq.Integration.ID = integration.ID
 	if creq.Protocol == "" {
-		// For the standard integrations the protocol carries the same name;
-		// spelling it out is only needed when they differ.
 		creq.Protocol = integration.Name
 	}
 
 	created, err := r.client.CreateConnector(creq)
 	if err != nil {
-		resp.Diagnostics.AddError("creating store", err.Error())
+		resp.Diagnostics.AddError("creating connector", err.Error())
 		return
 	}
 
-	if plan.Initialize.ValueBool() {
-		if err := r.client.InitializeStore(created.ID, plan.Compression.ValueString()); err != nil {
-			resp.Diagnostics.AddError("initializing store",
-				fmt.Sprintf("the connector %s was created but its storage failed to initialize: %s", created.ID, err))
-			return
-		}
-	}
-
-	// Read back rather than trusting the plan: the server computes values the
-	// config never named (temperature, for one), and state has to carry them
-	// or every following plan reports phantom drift.
 	plan.ID = types.StringValue(created.ID)
 	conn, err := r.client.GetConnector(created.ID)
 	if err != nil {
-		resp.Diagnostics.AddError("reading store after create", err.Error())
+		resp.Diagnostics.AddError("reading connector after create", err.Error())
 		return
 	}
 	refreshFacetFromConnector(ctx, plan.facet(), conn, &resp.Diagnostics)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
-func (r *storeResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	var state storeModel
+func (r *connectorResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var state connectorModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -218,16 +206,19 @@ func (r *storeResource) Read(ctx context.Context, req resource.ReadRequest, resp
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("reading store", err.Error())
+		resp.Diagnostics.AddError("reading connector", err.Error())
 		return
 	}
 
+	if conn.Type != "" {
+		state.Type = types.StringValue(conn.Type)
+	}
 	refreshFacetFromConnector(ctx, state.facet(), conn, &resp.Diagnostics)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-func (r *storeResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan, state storeModel
+func (r *connectorResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, state connectorModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
@@ -236,18 +227,16 @@ func (r *storeResource) Update(ctx context.Context, req resource.UpdateRequest, 
 
 	current, err := r.client.GetConnector(state.ID.ValueString())
 	if err != nil {
-		resp.Diagnostics.AddError("reading store before update", err.Error())
+		resp.Diagnostics.AddError("reading connector before update", err.Error())
 		return
 	}
 
-	// v1 update is a full-body POST: merge the plan over the connector's
-	// current state so attributes we do not manage keep their values.
-	creq := mergeConnectorRequest(ctx, plan.facet(), current, "store", &resp.Diagnostics)
+	creq := mergeConnectorRequest(ctx, plan.facet(), current, plan.Type.ValueString(), &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 	if err := r.client.UpdateConnector(state.ID.ValueString(), creq); err != nil {
-		resp.Diagnostics.AddError("updating store", err.Error())
+		resp.Diagnostics.AddError("updating connector", err.Error())
 		return
 	}
 
@@ -256,21 +245,23 @@ func (r *storeResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	if plan.Protocol.IsUnknown() || plan.Protocol.IsNull() {
 		plan.Protocol = state.Protocol
 	}
-	plan.Initialize = state.Initialize
+	if plan.Temperature.IsUnknown() {
+		plan.Temperature = state.Temperature
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
-func (r *storeResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	var state storeModel
+func (r *connectorResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var state connectorModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 	if err := r.client.DeleteConnector(state.ID.ValueString()); err != nil && !client.IsNotFound(err) {
-		resp.Diagnostics.AddError("deleting store", err.Error())
+		resp.Diagnostics.AddError("deleting connector", err.Error())
 	}
 }
 
-func (r *storeResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+func (r *connectorResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
