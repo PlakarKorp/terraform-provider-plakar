@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go build ./...
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+
+  # Acceptance needs a live plakman stack; runs on demand until the
+  # self-contained test stack lands (same dependency as the Ansible
+  # collection's integration job).
+  acceptance:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - env:
+          TF_ACC: "1"
+          PLAKAR_API_URL: ${{ secrets.PLAKAR_API_URL }}
+          PLAKAR_API_KEY: ${{ secrets.PLAKAR_API_KEY }}
+        run: go test ./internal/... -v -timeout 30m
