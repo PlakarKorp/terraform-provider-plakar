@@ -1,8 +1,8 @@
 # Terraform Provider — plakarkorp/plakar
 
-Manage [Plakar](https://plakar.io) backup configuration as code: stores,
-connectors and schedules as versioned Terraform resources, provisioned and
-evolved declaratively.
+Manage [Plakar](https://plakar.io) backup configuration as code: inventories,
+stores, connectors and schedules as versioned Terraform resources, provisioned
+and evolved declaratively.
 
 ```hcl
 terraform {
@@ -73,11 +73,43 @@ resource "plakar_schedule" "retention" {
 | `plakar_store` (resource) | A store — where backup data lands; storage initialized on creation |
 | `plakar_connector` (resource) | A source or destination connector |
 | `plakar_schedule` (resource) | A scheduled backup, prune, sync or check; a scheduled prune carries the retention rule |
+| `plakar_inventory` (resource) | An inventory — provider-backed (aws, ovh, scaleway, gcp, vmware, k8s) or self-managed |
+| `plakar_inventory_resource` (resource) | A resource declared in a self-managed inventory — the fleet, as code |
 | `plakar_store` / `plakar_connector` (data) | Look up existing stores and connectors by name — identity only, no credentials |
+| `plakar_inventory` (data) | An inventory, by name — identity only |
 | `plakar_resource` (data) | An inventory resource, by URN or name |
 | `plakar_integration` (data) | An installed integration, by name |
 
-All resources import by their id: `terraform import plakar_store.offsite <uuid>`.
+All resources import by their id: `terraform import plakar_store.offsite <uuid>`
+(`plakar_inventory_resource` by `<inventory_id>/<urn_id>`).
+
+A self-managed inventory closes the loop from machine to backup:
+
+```hcl
+resource "plakar_inventory" "fleet" {
+  name = "Fleet"
+  type = "self-managed"
+}
+
+resource "plakar_inventory_resource" "db1" {
+  inventory_id = plakar_inventory.fleet.id
+  urn          = "urn:fleet:database/db1"
+  name         = "db1"
+  class        = "database"
+  subclass     = "postgres"
+  endpoints    = ["db1.internal"]
+}
+
+resource "plakar_connector" "db1_dump" {
+  name        = "db1 dump"
+  type        = "source"
+  integration = "postgres"
+  resource    = plakar_inventory_resource.db1.urn
+  fields = {
+    connection_string = var.db1_connection_string
+  }
+}
+```
 
 ## Authentication
 

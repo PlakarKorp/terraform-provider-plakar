@@ -95,6 +95,8 @@ func (p *plakarProvider) Resources(_ context.Context) []func() resource.Resource
 		NewStoreResource,
 		NewConnectorResource,
 		NewScheduleResource,
+		NewInventoryResource,
+		NewInventoryResourceEntry,
 	}
 }
 
@@ -104,5 +106,6 @@ func (p *plakarProvider) DataSources(_ context.Context) []func() datasource.Data
 		NewIntegrationDataSource,
 		NewStoreDataSource,
 		NewConnectorDataSource,
+		NewInventoryDataSource,
 	}
 }
