@@ -59,26 +59,20 @@ resource "plakar_inventory" "aws" {
 <a id="nestedblock--aws"></a>
 ### Nested Schema for `aws`
 
-Required:
-
-- `credentials_type` (String) How to authenticate: iam or access_key.
-- `region` (String) AWS region the discovery runs against.
-
 Optional:
 
 - `access_key` (String, Sensitive) Access key id, when credentials_type is access_key.
+- `credentials_type` (String) How to authenticate: iam or access_key.
+- `region` (String) AWS region the discovery runs against.
 - `secret_access_key` (String, Sensitive) Secret access key, when credentials_type is access_key.
 
 
 <a id="nestedblock--gcp"></a>
 ### Nested Schema for `gcp`
 
-Required:
-
-- `project_id` (String)
-
 Optional:
 
+- `project_id` (String)
 - `service_account_json` (String, Sensitive) Service account key, as JSON. Unset falls back to ambient credentials.
 
 
@@ -93,7 +87,7 @@ Optional:
 <a id="nestedblock--ovh"></a>
 ### Nested Schema for `ovh`
 
-Required:
+Optional:
 
 - `application_key` (String, Sensitive)
 - `application_secret` (String, Sensitive)
@@ -104,7 +98,7 @@ Required:
 <a id="nestedblock--scaleway"></a>
 ### Nested Schema for `scaleway`
 
-Required:
+Optional:
 
 - `access_key` (String, Sensitive)
 - `project_id` (String)
@@ -114,16 +108,13 @@ Required:
 <a id="nestedblock--vmware"></a>
 ### Nested Schema for `vmware`
 
-Required:
+Optional:
 
 - `password` (String, Sensitive)
 - `server` (String)
-- `username` (String)
-
-Optional:
-
 - `tls_ca_bundle` (String) CA bundle to verify the vSphere server against, PEM.
 - `tls_skip_verify` (Boolean) Skip TLS verification of the vSphere server.
+- `username` (String)
 
 ## Import
 

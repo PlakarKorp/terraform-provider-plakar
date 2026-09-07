@@ -118,7 +118,7 @@ func (r *inventoryResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				Description: "Configuration of an aws inventory.",
 				Attributes: map[string]schema.Attribute{
 					"credentials_type": schema.StringAttribute{
-						Required:    true,
+						Optional:    true,
 						Description: "How to authenticate: iam or access_key.",
 						Validators: []validator.String{
 							stringvalidator.OneOf("iam", "access_key"),
@@ -135,7 +135,7 @@ func (r *inventoryResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 						Description: "Secret access key, when credentials_type is access_key.",
 					},
 					"region": schema.StringAttribute{
-						Required:    true,
+						Optional:    true,
 						Description: "AWS region the discovery runs against.",
 					},
 				},
@@ -143,11 +143,11 @@ func (r *inventoryResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 			"ovh": schema.SingleNestedBlock{
 				Description: "Configuration of an ovh inventory.",
 				Attributes: map[string]schema.Attribute{
-					"application_key":    schema.StringAttribute{Required: true, Sensitive: true},
-					"application_secret": schema.StringAttribute{Required: true, Sensitive: true},
-					"consumer_key":       schema.StringAttribute{Required: true, Sensitive: true},
+					"application_key":    schema.StringAttribute{Optional: true, Sensitive: true},
+					"application_secret": schema.StringAttribute{Optional: true, Sensitive: true},
+					"consumer_key":       schema.StringAttribute{Optional: true, Sensitive: true},
 					"endpoint": schema.StringAttribute{
-						Required:    true,
+						Optional:    true,
 						Description: "OVH API endpoint, e.g. ovh-eu.",
 					},
 				},
@@ -155,15 +155,15 @@ func (r *inventoryResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 			"scaleway": schema.SingleNestedBlock{
 				Description: "Configuration of a scaleway inventory.",
 				Attributes: map[string]schema.Attribute{
-					"project_id": schema.StringAttribute{Required: true},
-					"access_key": schema.StringAttribute{Required: true, Sensitive: true},
-					"secret_key": schema.StringAttribute{Required: true, Sensitive: true},
+					"project_id": schema.StringAttribute{Optional: true},
+					"access_key": schema.StringAttribute{Optional: true, Sensitive: true},
+					"secret_key": schema.StringAttribute{Optional: true, Sensitive: true},
 				},
 			},
 			"gcp": schema.SingleNestedBlock{
 				Description: "Configuration of a gcp inventory.",
 				Attributes: map[string]schema.Attribute{
-					"project_id": schema.StringAttribute{Required: true},
+					"project_id": schema.StringAttribute{Optional: true},
 					"service_account_json": schema.StringAttribute{
 						Optional:    true,
 						Sensitive:   true,
@@ -174,9 +174,9 @@ func (r *inventoryResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 			"vmware": schema.SingleNestedBlock{
 				Description: "Configuration of a vmware inventory.",
 				Attributes: map[string]schema.Attribute{
-					"server":   schema.StringAttribute{Required: true},
-					"username": schema.StringAttribute{Required: true},
-					"password": schema.StringAttribute{Required: true, Sensitive: true},
+					"server":   schema.StringAttribute{Optional: true},
+					"username": schema.StringAttribute{Optional: true},
+					"password": schema.StringAttribute{Optional: true, Sensitive: true},
 					"tls_skip_verify": schema.BoolAttribute{
 						Optional:    true,
 						Computed:    true,
@@ -248,6 +248,60 @@ func (r *inventoryResource) ValidateConfig(ctx context.Context, req resource.Val
 				"configuration block does not match type",
 				fmt.Sprintf("the inventory is of type %q; remove the %q block or change the type", typ, name))
 		}
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// The server requires these per type; catching them here makes the miss a
+	// plan-time error instead of an apply-time 400. They cannot be Required in
+	// the schema: the framework enforces required nested attributes even when
+	// the enclosing block is absent, which would demand every block at once.
+	// An unknown value is a value; only a genuinely unset one is an error.
+	require := func(block string, fields map[string]types.String) {
+		for name, v := range fields {
+			if v.IsNull() {
+				resp.Diagnostics.AddAttributeError(path.Root(block).AtName(name),
+					"missing required field",
+					fmt.Sprintf("a %s inventory needs %s.%s", typ, block, name))
+			}
+		}
+	}
+	switch typ {
+	case "aws":
+		require("aws", map[string]types.String{
+			"credentials_type": config.AWS.CredentialsType,
+			"region":           config.AWS.Region,
+		})
+		if config.AWS.CredentialsType.ValueString() == "access_key" {
+			require("aws", map[string]types.String{
+				"access_key":        config.AWS.AccessKey,
+				"secret_access_key": config.AWS.SecretAccessKey,
+			})
+		}
+	case "ovh":
+		require("ovh", map[string]types.String{
+			"application_key":    config.OVH.ApplicationKey,
+			"application_secret": config.OVH.ApplicationSecret,
+			"consumer_key":       config.OVH.ConsumerKey,
+			"endpoint":           config.OVH.Endpoint,
+		})
+	case "scaleway":
+		require("scaleway", map[string]types.String{
+			"project_id": config.Scaleway.ProjectID,
+			"access_key": config.Scaleway.AccessKey,
+			"secret_key": config.Scaleway.SecretKey,
+		})
+	case "gcp":
+		require("gcp", map[string]types.String{
+			"project_id": config.GCP.ProjectID,
+		})
+	case "vmware":
+		require("vmware", map[string]types.String{
+			"server":   config.VMWare.Server,
+			"username": config.VMWare.Username,
+			"password": config.VMWare.Password,
+		})
 	}
 }
 
