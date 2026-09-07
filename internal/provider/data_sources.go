@@ -275,3 +275,149 @@ func (d *connectorLookupDataSource) Read(ctx context.Context, req datasource.Rea
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &config)...)
 }
+
+// --- plakar_organization -------------------------------------------------------
+
+// organizationDataSource is the read-only lookup of an organization by name,
+// searched across the provider organization's subtree the way the Ansible
+// collection resolves them; a duplicate name there is an error.
+type organizationDataSource struct{ client *client.Client }
+
+type organizationDataModel struct {
+	Name     types.String `tfsdk:"name"`
+	ID       types.String `tfsdk:"id"`
+	Type     types.String `tfsdk:"type"`
+	ParentID types.String `tfsdk:"parent_id"`
+}
+
+func NewOrganizationDataSource() datasource.DataSource { return &organizationDataSource{} }
+
+func (d *organizationDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_organization"
+}
+
+func (d *organizationDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Description: "An organization, looked up by name across the provider organization's subtree.",
+		Attributes: map[string]schema.Attribute{
+			"name":      schema.StringAttribute{Required: true},
+			"id":        schema.StringAttribute{Computed: true},
+			"type":      schema.StringAttribute{Computed: true},
+			"parent_id": schema.StringAttribute{Computed: true},
+		},
+	}
+}
+
+func (d *organizationDataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
+	d.client = configureClient(req.ProviderData, &resp.Diagnostics)
+}
+
+func (d *organizationDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	var config organizationDataModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	org, err := d.client.FindOrganization(config.Name.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("looking up organization", err.Error())
+		return
+	}
+	if org == nil {
+		resp.Diagnostics.AddError("organization not found",
+			fmt.Sprintf("no organization named %q in the provider organization's subtree", config.Name.ValueString()))
+		return
+	}
+	config.ID = types.StringValue(org.ID)
+	config.Type = types.StringValue(org.Type)
+	if org.ParentID != nil {
+		config.ParentID = types.StringValue(*org.ParentID)
+	} else {
+		config.ParentID = types.StringNull()
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &config)...)
+}
+
+// --- plakar_member -------------------------------------------------------------
+
+// memberDataSource is the read-only lookup of a member by email (a person) or
+// name (a service account), for granting to people Terraform does not manage.
+type memberDataSource struct{ client *client.Client }
+
+type memberDataModel struct {
+	OrganizationID types.String `tfsdk:"organization_id"`
+	Email          types.String `tfsdk:"email"`
+	Name           types.String `tfsdk:"name"`
+	ID             types.String `tfsdk:"id"`
+	Account        types.String `tfsdk:"account"`
+	Service        types.Bool   `tfsdk:"service"`
+}
+
+func NewMemberDataSource() datasource.DataSource { return &memberDataSource{} }
+
+func (d *memberDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_member"
+}
+
+func (d *memberDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Description: "A member of an organization, looked up by email (a person) or " +
+			"name (a service account, which has no address).",
+		Attributes: map[string]schema.Attribute{
+			"organization_id": schema.StringAttribute{
+				Optional:    true,
+				Description: "Id of the organization. Defaults to the provider's organization.",
+			},
+			"email":   schema.StringAttribute{Optional: true},
+			"name":    schema.StringAttribute{Optional: true},
+			"id":      schema.StringAttribute{Computed: true, Description: "User id of the member."},
+			"account": schema.StringAttribute{Computed: true},
+			"service": schema.BoolAttribute{Computed: true},
+		},
+	}
+}
+
+func (d *memberDataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
+	d.client = configureClient(req.ProviderData, &resp.Diagnostics)
+}
+
+func (d *memberDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	var config memberDataModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if config.Email.IsNull() == config.Name.IsNull() {
+		resp.Diagnostics.AddError("ambiguous member lookup",
+			"set exactly one of email (a person) or name (a service account)")
+		return
+	}
+	orgID := config.OrganizationID.ValueString()
+	if orgID == "" {
+		id, err := d.client.OrgID()
+		if err != nil {
+			resp.Diagnostics.AddError("resolving the provider organization", err.Error())
+			return
+		}
+		orgID = id
+	}
+	member, err := d.client.FindMember(orgID, config.Email.ValueString(), config.Name.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("looking up member", err.Error())
+		return
+	}
+	if member == nil {
+		who := config.Email.ValueString()
+		if who == "" {
+			who = config.Name.ValueString()
+		}
+		resp.Diagnostics.AddError("member not found",
+			fmt.Sprintf("no member %q in the organization", who))
+		return
+	}
+	config.OrganizationID = types.StringValue(orgID)
+	config.ID = types.StringValue(member.UserID)
+	config.Account = types.StringValue(member.Account)
+	config.Service = types.BoolValue(member.IsService)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &config)...)
+}
