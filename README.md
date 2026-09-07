@@ -1,8 +1,8 @@
 # Terraform Provider — plakarkorp/plakar
 
-Manage [Plakar](https://plakar.io) backup configuration as code: inventories,
-stores, connectors and schedules as versioned Terraform resources, provisioned
-and evolved declaratively.
+Manage [Plakar](https://plakar.io) backup configuration as code: organizations,
+members, grants, inventories, stores, connectors and schedules as versioned
+Terraform resources, provisioned and evolved declaratively.
 
 ```hcl
 terraform {
@@ -75,13 +75,66 @@ resource "plakar_schedule" "retention" {
 | `plakar_schedule` (resource) | A scheduled backup, prune, sync or check; a scheduled prune carries the retention rule |
 | `plakar_inventory` (resource) | An inventory — provider-backed (aws, ovh, scaleway, gcp, vmware, k8s) or self-managed |
 | `plakar_inventory_resource` (resource) | A resource declared in a self-managed inventory — the fleet, as code |
+| `plakar_organization` (resource) | A tenant, or a perimeter nested under one — destroying it deletes the tenant |
+| `plakar_member` (resource) | A person or service account belonging to an organization; carries no permission |
+| `plakar_grant` (resource) | A role held by a member — one (subject, role) pair |
 | `plakar_store` / `plakar_connector` (data) | Look up existing stores and connectors by name — identity only, no credentials |
 | `plakar_inventory` (data) | An inventory, by name — identity only |
+| `plakar_organization` (data) | An organization, by name across the provider organization's subtree |
+| `plakar_member` (data) | A member, by email (a person) or name (a service account) |
 | `plakar_resource` (data) | An inventory resource, by URN or name |
 | `plakar_integration` (data) | An installed integration, by name |
 
 All resources import by their id: `terraform import plakar_store.offsite <uuid>`
 (`plakar_inventory_resource` by `<inventory_id>/<urn_id>`).
+
+A deployment's tenants, their people and their permissions are three separate
+facts, declared separately — an organization nests under another, a membership
+carries no permission, and a grant is one (subject, role) pair:
+
+```hcl
+resource "plakar_organization" "lyon" {
+  name = "Lyon"
+}
+
+resource "plakar_organization" "lyon_production" {
+  name      = "Lyon production"
+  parent_id = plakar_organization.lyon.id
+}
+
+resource "plakar_member" "alice" {
+  organization_id = plakar_organization.lyon.id
+  email           = "alice@lyon.example"
+  name            = "Alice"
+}
+
+# A service account for automation: no email, no interactive login; its API
+# key is minted in the Plakar UI.
+resource "plakar_member" "nightly" {
+  organization_id = plakar_organization.lyon_production.id
+  name            = "nightly-backups"
+  service         = true
+}
+
+resource "plakar_grant" "alice_owns_lyon" {
+  organization_id = plakar_organization.lyon.id
+  subject_id      = plakar_member.alice.id
+  role            = "owner"
+}
+
+resource "plakar_grant" "nightly_operates" {
+  organization_id = plakar_organization.lyon_production.id
+  subject_id      = plakar_member.nightly.id
+  role            = "operator"
+}
+
+# A brand-new address gets an account with a one-time generated password —
+# sensitive, kept in state, shown by `terraform output`.
+output "initial_passwords" {
+  sensitive = true
+  value     = { alice = plakar_member.alice.generated_password }
+}
+```
 
 A self-managed inventory closes the loop from machine to backup:
 

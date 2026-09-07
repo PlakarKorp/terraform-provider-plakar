@@ -32,6 +32,12 @@ type Client struct {
 
 	// taskMu serializes scheduler-task mutations; see schedule.go.
 	taskMu sync.Mutex
+
+	// inviteMu serializes invitations: two concurrent invites for the same
+	// brand-new address race to register the account, and the loser's unique
+	// violation comes back as a 500. Terraform applies in parallel, so the
+	// race is one config away; see org.go.
+	inviteMu sync.Mutex
 }
 
 func New(apiURL, apiKey, organizationID string) *Client {
