@@ -125,6 +125,64 @@ func (d *integrationDataSource) Read(ctx context.Context, req datasource.ReadReq
 	resp.Diagnostics.Append(resp.State.Set(ctx, &config)...)
 }
 
+// --- plakar_inventory ----------------------------------------------------------
+
+// inventoryDataSource is the read-only lookup of an inventory by name —
+// identity only, an inventory's configuration carries credentials.
+type inventoryDataSource struct{ client *client.Client }
+
+type inventoryDataModel struct {
+	Name types.String `tfsdk:"name"`
+	ID   types.String `tfsdk:"id"`
+	Type types.String `tfsdk:"type"`
+}
+
+func NewInventoryDataSource() datasource.DataSource { return &inventoryDataSource{} }
+
+func (d *inventoryDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_inventory"
+}
+
+func (d *inventoryDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Description: "An inventory, looked up by name.",
+		Attributes: map[string]schema.Attribute{
+			"name": schema.StringAttribute{Required: true},
+			"id":   schema.StringAttribute{Computed: true},
+			"type": schema.StringAttribute{
+				Computed:    true,
+				Description: "aws, ovh, scaleway, gcp, vmware, k8s or self-managed.",
+			},
+		},
+	}
+}
+
+func (d *inventoryDataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
+	d.client = configureClient(req.ProviderData, &resp.Diagnostics)
+}
+
+func (d *inventoryDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	var config inventoryDataModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	inv, err := d.client.FindInventory(config.Name.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("looking up inventory", err.Error())
+		return
+	}
+	if inv == nil {
+		resp.Diagnostics.AddError("inventory not found",
+			fmt.Sprintf("no inventory named %q is visible — an empty result can also mean "+
+				"the API key's account holds no grant in the organization", config.Name.ValueString()))
+		return
+	}
+	config.ID = types.StringValue(inv.ID)
+	config.Type = types.StringValue(inv.Type)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &config)...)
+}
+
 // --- plakar_store / plakar_connector lookups ---------------------------------
 
 // connectorLookupDataSource serves both read-only lookups: a store by name,
