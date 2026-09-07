@@ -163,6 +163,12 @@ type MemberInvite struct {
 }
 
 func (c *Client) InviteMember(orgID, email, name string, service bool) (*MemberInvite, error) {
+	// One invitation at a time: the same address invited into two
+	// organizations in one plan must find the account its twin registered,
+	// not race it into a unique violation.
+	c.inviteMu.Lock()
+	defer c.inviteMu.Unlock()
+
 	body := map[string]any{"auto_accept": true, "is_service": service}
 	if email != "" {
 		body["email"] = email
