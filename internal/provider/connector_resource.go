@@ -183,7 +183,21 @@ func (r *connectorResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
+	// The connector now exists: record its id before the read-back, so a
+	// transient failure there cannot orphan it and duplicate it on the next
+	// apply. The other computed attributes must be known too for the state
+	// to be savable.
 	plan.ID = types.StringValue(created.ID)
+	plan.URNID = types.StringValue(res.URNID)
+	plan.Protocol = types.StringValue(creq.Protocol)
+	if plan.Temperature.IsUnknown() {
+		plan.Temperature = stringOrNull(created.Temperature, types.StringNull())
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	conn, err := r.client.GetConnector(created.ID)
 	if err != nil {
 		resp.Diagnostics.AddError("reading connector after create", err.Error())

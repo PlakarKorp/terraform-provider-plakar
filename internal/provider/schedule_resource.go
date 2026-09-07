@@ -325,9 +325,23 @@ func (r *scheduleResource) Create(ctx context.Context, req resource.CreateReques
 		resp.Diagnostics.AddError("creating schedule", err.Error())
 		return
 	}
+	// The task now exists: record its id before the read-back, so a transient
+	// failure there cannot orphan it and duplicate it on the next apply. Rule
+	// ids are server-assigned and unknown in the plan; the create response
+	// echoes them, and the state cannot be saved with unknowns.
 	plan.ID = types.StringValue(created.ID)
-	// Read back: rule ids are server-assigned, and the server may normalize
-	// what it stored.
+	for i := range plan.Rules {
+		plan.Rules[i].ID = types.StringNull()
+		if i < len(created.Schedule.Rules) && created.Schedule.Rules[i].ID != nil {
+			plan.Rules[i].ID = types.StringValue(*created.Schedule.Rules[i].ID)
+		}
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Read back: the server may normalize what it stored.
 	task, err := r.client.GetTask(created.ID)
 	if err != nil {
 		resp.Diagnostics.AddError("reading schedule after create", err.Error())

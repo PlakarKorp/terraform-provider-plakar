@@ -184,6 +184,21 @@ func (r *storeResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
+	// The connector now exists: record its id before the initialize and the
+	// read-back, so a transient failure there cannot orphan it and duplicate
+	// it on the next apply. The other computed attributes must be known too
+	// for the state to be savable.
+	plan.ID = types.StringValue(created.ID)
+	plan.URNID = types.StringValue(res.URNID)
+	plan.Protocol = types.StringValue(creq.Protocol)
+	if plan.Temperature.IsUnknown() {
+		plan.Temperature = stringOrNull(created.Temperature, types.StringNull())
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	if plan.Initialize.ValueBool() {
 		if err := r.client.InitializeStore(created.ID, plan.Compression.ValueString()); err != nil {
 			resp.Diagnostics.AddError("initializing store",
@@ -195,7 +210,6 @@ func (r *storeResource) Create(ctx context.Context, req resource.CreateRequest, 
 	// Read back rather than trusting the plan: the server computes values the
 	// config never named (temperature, for one), and state has to carry them
 	// or every following plan reports phantom drift.
-	plan.ID = types.StringValue(created.ID)
 	conn, err := r.client.GetConnector(created.ID)
 	if err != nil {
 		resp.Diagnostics.AddError("reading store after create", err.Error())
