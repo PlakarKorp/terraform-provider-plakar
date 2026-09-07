@@ -62,7 +62,7 @@ resource "plakar_connector" "db1_dump" {
 ### Read-Only
 
 - `id` (String) Id of the resource's URN, the handle connectors attach to.
-- `locked` (Boolean) Whether the resource is locked — no task may use a connector configured against it. Placed and lifted outside Terraform, by an operator.
+- `locked` (Boolean) Whether the resource is locked — no task may use a connector configured against it. Placed and lifted outside Terraform, by an operator — which is why it plans as unknown: promising the state's value could contradict an operator's act.
 
 ## Import
 

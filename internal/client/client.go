@@ -227,29 +227,41 @@ type Resource struct {
 	Name  string `json:"name"`
 }
 
-// ResourceRef finds a resource across all inventories, by URN first, then by
-// name. The route serves at most 50 rows per page whatever limit is asked;
-// the search filter narrows server-side, exact matching happens here.
-func (c *Client) ResourceRef(value string) (*Resource, error) {
-	var items []Resource
+// paginate walks a paginated listing to the end. The listing routes serve at
+// most 50 rows per page whatever limit is asked, so ask for exactly that.
+func paginate[T any](c *Client, path string, query url.Values) ([]T, error) {
+	var items []T
 	offset := 0
 	for {
 		q := url.Values{}
+		for k, v := range query {
+			q[k] = v
+		}
 		q.Set("limit", "50")
 		q.Set("offset", fmt.Sprint(offset))
-		q.Set("search", value)
 		var page struct {
-			Total int        `json:"total"`
-			Items []Resource `json:"items"`
+			Total int `json:"total"`
+			Items []T `json:"items"`
 		}
-		if err := c.Do("GET", "/api/v1/inventories/resources", nil, q, &page); err != nil {
+		if err := c.Do("GET", path, nil, q, &page); err != nil {
 			return nil, err
 		}
 		items = append(items, page.Items...)
 		offset += len(page.Items)
 		if len(page.Items) == 0 || offset >= page.Total {
-			break
+			return items, nil
 		}
+	}
+}
+
+// ResourceRef finds a resource across all inventories, by URN first, then by
+// name. The search filter narrows server-side, exact matching happens here.
+func (c *Client) ResourceRef(value string) (*Resource, error) {
+	q := url.Values{}
+	q.Set("search", value)
+	items, err := paginate[Resource](c, "/api/v1/inventories/resources", q)
+	if err != nil {
+		return nil, err
 	}
 	for i := range items {
 		if items[i].URN == value {

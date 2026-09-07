@@ -5,7 +5,6 @@ package client
 
 import (
 	"fmt"
-	"net/url"
 )
 
 // The typed inventory configurations, one per provider the inventory watches.
@@ -124,25 +123,10 @@ func (c *Client) FindInventory(name string) (*InventorySummary, error) {
 	if err != nil {
 		return nil, err
 	}
-	var items []InventorySummary
-	offset := 0
-	for {
-		q := url.Values{}
-		q.Set("limit", "50")
-		q.Set("offset", fmt.Sprint(offset))
-		var page struct {
-			Total int                `json:"total"`
-			Items []InventorySummary `json:"items"`
-		}
-		if err := c.Do("GET", "/api/v1/account/organizations/"+org+"/inventories",
-			nil, q, &page); err != nil {
-			return nil, err
-		}
-		items = append(items, page.Items...)
-		offset += len(page.Items)
-		if len(page.Items) == 0 || offset >= page.Total {
-			break
-		}
+	items, err := paginate[InventorySummary](c,
+		"/api/v1/account/organizations/"+org+"/inventories", nil)
+	if err != nil {
+		return nil, err
 	}
 	var matches []*InventorySummary
 	for i := range items {
@@ -170,10 +154,12 @@ type InventoryResourceEndpoint struct {
 	Endpoint string `json:"endpoint"`
 }
 
-// InventoryResource is a resource declared in a self-managed inventory.
-// urn_id is the write path's identity; the row id is not addressable.
-type InventoryResource struct {
-	URNID                string                      `json:"urn_id"`
+// InventoryResourceRequest is the write body: what a configuration declares.
+// The server-owned fields (urn_id, locked) live on the read shape only, so a
+// write can never carry them — today the server ignores unknown keys, but a
+// body that silently lifted an operator's lock the day it stops would be a
+// bad way to find out.
+type InventoryResourceRequest struct {
 	URN                  string                      `json:"urn"`
 	Name                 string                      `json:"name"`
 	Class                string                      `json:"class"`
@@ -182,13 +168,21 @@ type InventoryResource struct {
 	Tags                 []string                    `json:"tags"`
 	Endpoints            []InventoryResourceEndpoint `json:"endpoints"`
 	ExcludedFromCoverage bool                        `json:"excluded_from_coverage"`
-	Locked               bool                        `json:"locked"`
+}
+
+// InventoryResource is the read shape: the declaration plus what the server
+// owns. urn_id is the resource's identity on the write path; the row id is
+// not addressable.
+type InventoryResource struct {
+	InventoryResourceRequest
+	URNID  string `json:"urn_id"`
+	Locked bool   `json:"locked"`
 }
 
 // CreateInventoryResource declares a resource in a self-managed inventory.
 // The create response does not echo endpoints; callers wanting the canonical
 // state re-read the resource.
-func (c *Client) CreateInventoryResource(inventoryID string, res *InventoryResource) (*InventoryResource, error) {
+func (c *Client) CreateInventoryResource(inventoryID string, res *InventoryResourceRequest) (*InventoryResource, error) {
 	var out InventoryResource
 	if err := c.Do("POST", "/api/v1/inventories/"+inventoryID+"/resources",
 		res, nil, &out); err != nil {
@@ -208,7 +202,7 @@ func (c *Client) GetInventoryResource(inventoryID, urnID string) (*InventoryReso
 
 // UpdateInventoryResource sends the full-body POST v1 wants. The URN is
 // immutable server-side, which the resource surfaces as RequiresReplace.
-func (c *Client) UpdateInventoryResource(inventoryID, urnID string, res *InventoryResource) error {
+func (c *Client) UpdateInventoryResource(inventoryID, urnID string, res *InventoryResourceRequest) error {
 	return c.Do("POST", "/api/v1/inventories/"+inventoryID+"/resources/"+urnID,
 		res, nil, nil)
 }

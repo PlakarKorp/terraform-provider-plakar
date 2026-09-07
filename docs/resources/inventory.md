@@ -73,9 +73,12 @@ Optional:
 <a id="nestedblock--gcp"></a>
 ### Nested Schema for `gcp`
 
-Optional:
+Required:
 
 - `project_id` (String)
+
+Optional:
+
 - `service_account_json` (String, Sensitive) Service account key, as JSON. Unset falls back to ambient credentials.
 
 
@@ -90,7 +93,7 @@ Optional:
 <a id="nestedblock--ovh"></a>
 ### Nested Schema for `ovh`
 
-Optional:
+Required:
 
 - `application_key` (String, Sensitive)
 - `application_secret` (String, Sensitive)
@@ -101,7 +104,7 @@ Optional:
 <a id="nestedblock--scaleway"></a>
 ### Nested Schema for `scaleway`
 
-Optional:
+Required:
 
 - `access_key` (String, Sensitive)
 - `project_id` (String)
@@ -111,13 +114,16 @@ Optional:
 <a id="nestedblock--vmware"></a>
 ### Nested Schema for `vmware`
 
-Optional:
+Required:
 
 - `password` (String, Sensitive)
 - `server` (String)
+- `username` (String)
+
+Optional:
+
 - `tls_ca_bundle` (String) CA bundle to verify the vSphere server against, PEM.
 - `tls_skip_verify` (Boolean) Skip TLS verification of the vSphere server.
-- `username` (String)
 
 ## Import
 

@@ -143,11 +143,11 @@ func (r *inventoryResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 			"ovh": schema.SingleNestedBlock{
 				Description: "Configuration of an ovh inventory.",
 				Attributes: map[string]schema.Attribute{
-					"application_key":    schema.StringAttribute{Optional: true, Sensitive: true},
-					"application_secret": schema.StringAttribute{Optional: true, Sensitive: true},
-					"consumer_key":       schema.StringAttribute{Optional: true, Sensitive: true},
+					"application_key":    schema.StringAttribute{Required: true, Sensitive: true},
+					"application_secret": schema.StringAttribute{Required: true, Sensitive: true},
+					"consumer_key":       schema.StringAttribute{Required: true, Sensitive: true},
 					"endpoint": schema.StringAttribute{
-						Optional:    true,
+						Required:    true,
 						Description: "OVH API endpoint, e.g. ovh-eu.",
 					},
 				},
@@ -155,15 +155,15 @@ func (r *inventoryResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 			"scaleway": schema.SingleNestedBlock{
 				Description: "Configuration of a scaleway inventory.",
 				Attributes: map[string]schema.Attribute{
-					"project_id": schema.StringAttribute{Optional: true},
-					"access_key": schema.StringAttribute{Optional: true, Sensitive: true},
-					"secret_key": schema.StringAttribute{Optional: true, Sensitive: true},
+					"project_id": schema.StringAttribute{Required: true},
+					"access_key": schema.StringAttribute{Required: true, Sensitive: true},
+					"secret_key": schema.StringAttribute{Required: true, Sensitive: true},
 				},
 			},
 			"gcp": schema.SingleNestedBlock{
 				Description: "Configuration of a gcp inventory.",
 				Attributes: map[string]schema.Attribute{
-					"project_id": schema.StringAttribute{Optional: true},
+					"project_id": schema.StringAttribute{Required: true},
 					"service_account_json": schema.StringAttribute{
 						Optional:    true,
 						Sensitive:   true,
@@ -174,9 +174,9 @@ func (r *inventoryResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 			"vmware": schema.SingleNestedBlock{
 				Description: "Configuration of a vmware inventory.",
 				Attributes: map[string]schema.Attribute{
-					"server":   schema.StringAttribute{Optional: true},
-					"username": schema.StringAttribute{Optional: true},
-					"password": schema.StringAttribute{Optional: true, Sensitive: true},
+					"server":   schema.StringAttribute{Required: true},
+					"username": schema.StringAttribute{Required: true},
+					"password": schema.StringAttribute{Required: true, Sensitive: true},
 					"tls_skip_verify": schema.BoolAttribute{
 						Optional:    true,
 						Computed:    true,
@@ -235,9 +235,11 @@ func (r *inventoryResource) ValidateConfig(ctx context.Context, req resource.Val
 	if typ == "" { // unknown during validation, e.g. computed from elsewhere
 		return
 	}
+	// A self-managed inventory has no block of its own, so the mismatch case
+	// below already covers every stray block under it.
 	for name, set := range blocks {
 		switch {
-		case name == typ && !set && typ != "self-managed":
+		case name == typ && !set:
 			resp.Diagnostics.AddAttributeError(path.Root("type"),
 				"missing configuration block",
 				fmt.Sprintf("an inventory of type %q needs a %q configuration block", typ, typ))
@@ -247,29 +249,11 @@ func (r *inventoryResource) ValidateConfig(ctx context.Context, req resource.Val
 				fmt.Sprintf("the inventory is of type %q; remove the %q block or change the type", typ, name))
 		}
 	}
-	if typ == "self-managed" {
-		for name, set := range blocks {
-			if set {
-				resp.Diagnostics.AddAttributeError(path.Root(name),
-					"configuration block does not match type",
-					"a self-managed inventory carries no configuration block")
-			}
-		}
-	}
 }
 
 // field wraps a string attribute into the wire's {value} shape.
 func field(v types.String) client.Field {
 	return client.Field{Value: v.ValueString()}
-}
-
-// syncString refreshes a string attribute from the server's echo without
-// inventing drift: an empty echo over a null attribute stays null.
-func syncString(state types.String, server string) types.String {
-	if server == "" && state.IsNull() {
-		return state
-	}
-	return types.StringValue(server)
 }
 
 func (m *inventoryModel) toRequest() *client.InventoryRequest {
@@ -335,45 +319,45 @@ func (m *inventoryModel) refreshFromInventory(inv *client.Inventory) {
 		if m.AWS == nil {
 			m.AWS = &inventoryAWSModel{}
 		}
-		m.AWS.CredentialsType = syncString(m.AWS.CredentialsType, inv.AWS.CredentialsType)
-		m.AWS.AccessKey = syncString(m.AWS.AccessKey, inv.AWS.AccessKey.Value)
-		m.AWS.SecretAccessKey = syncString(m.AWS.SecretAccessKey, inv.AWS.SecretAccessKey.Value)
-		m.AWS.Region = syncString(m.AWS.Region, inv.AWS.Region)
+		m.AWS.CredentialsType = stringOrNull(inv.AWS.CredentialsType, m.AWS.CredentialsType)
+		m.AWS.AccessKey = stringOrNull(inv.AWS.AccessKey.Value, m.AWS.AccessKey)
+		m.AWS.SecretAccessKey = stringOrNull(inv.AWS.SecretAccessKey.Value, m.AWS.SecretAccessKey)
+		m.AWS.Region = stringOrNull(inv.AWS.Region, m.AWS.Region)
 	case inv.OVH != nil:
 		if m.OVH == nil {
 			m.OVH = &inventoryOVHModel{}
 		}
-		m.OVH.ApplicationKey = syncString(m.OVH.ApplicationKey, inv.OVH.ApplicationKey.Value)
-		m.OVH.ApplicationSecret = syncString(m.OVH.ApplicationSecret, inv.OVH.ApplicationSecret.Value)
-		m.OVH.ConsumerKey = syncString(m.OVH.ConsumerKey, inv.OVH.ConsumerKey.Value)
-		m.OVH.Endpoint = syncString(m.OVH.Endpoint, inv.OVH.Endpoint)
+		m.OVH.ApplicationKey = stringOrNull(inv.OVH.ApplicationKey.Value, m.OVH.ApplicationKey)
+		m.OVH.ApplicationSecret = stringOrNull(inv.OVH.ApplicationSecret.Value, m.OVH.ApplicationSecret)
+		m.OVH.ConsumerKey = stringOrNull(inv.OVH.ConsumerKey.Value, m.OVH.ConsumerKey)
+		m.OVH.Endpoint = stringOrNull(inv.OVH.Endpoint, m.OVH.Endpoint)
 	case inv.Scaleway != nil:
 		if m.Scaleway == nil {
 			m.Scaleway = &inventoryScalewayModel{}
 		}
-		m.Scaleway.ProjectID = syncString(m.Scaleway.ProjectID, inv.Scaleway.ProjectID.Value)
-		m.Scaleway.AccessKey = syncString(m.Scaleway.AccessKey, inv.Scaleway.AccessKey.Value)
-		m.Scaleway.SecretKey = syncString(m.Scaleway.SecretKey, inv.Scaleway.SecretKey.Value)
+		m.Scaleway.ProjectID = stringOrNull(inv.Scaleway.ProjectID.Value, m.Scaleway.ProjectID)
+		m.Scaleway.AccessKey = stringOrNull(inv.Scaleway.AccessKey.Value, m.Scaleway.AccessKey)
+		m.Scaleway.SecretKey = stringOrNull(inv.Scaleway.SecretKey.Value, m.Scaleway.SecretKey)
 	case inv.GCP != nil:
 		if m.GCP == nil {
 			m.GCP = &inventoryGCPModel{}
 		}
-		m.GCP.ProjectID = syncString(m.GCP.ProjectID, inv.GCP.ProjectID.Value)
-		m.GCP.ServiceAccountJSON = syncString(m.GCP.ServiceAccountJSON, inv.GCP.ServiceAccountJSON.Value)
+		m.GCP.ProjectID = stringOrNull(inv.GCP.ProjectID.Value, m.GCP.ProjectID)
+		m.GCP.ServiceAccountJSON = stringOrNull(inv.GCP.ServiceAccountJSON.Value, m.GCP.ServiceAccountJSON)
 	case inv.VMWare != nil:
 		if m.VMWare == nil {
 			m.VMWare = &inventoryVMWareModel{}
 		}
-		m.VMWare.Server = syncString(m.VMWare.Server, inv.VMWare.Server.Value)
-		m.VMWare.Username = syncString(m.VMWare.Username, inv.VMWare.Username.Value)
-		m.VMWare.Password = syncString(m.VMWare.Password, inv.VMWare.Password.Value)
+		m.VMWare.Server = stringOrNull(inv.VMWare.Server.Value, m.VMWare.Server)
+		m.VMWare.Username = stringOrNull(inv.VMWare.Username.Value, m.VMWare.Username)
+		m.VMWare.Password = stringOrNull(inv.VMWare.Password.Value, m.VMWare.Password)
 		m.VMWare.TLSSkipVerify = types.BoolValue(inv.VMWare.TLSSkipVerify == "true")
-		m.VMWare.TLSCABundle = syncString(m.VMWare.TLSCABundle, inv.VMWare.TLSCABundle.Value)
+		m.VMWare.TLSCABundle = stringOrNull(inv.VMWare.TLSCABundle.Value, m.VMWare.TLSCABundle)
 	case inv.K8S != nil:
 		if m.K8S == nil {
 			m.K8S = &inventoryK8SModel{}
 		}
-		m.K8S.Kubeconfig = syncString(m.K8S.Kubeconfig, inv.K8S.Kubeconfig.Value)
+		m.K8S.Kubeconfig = stringOrNull(inv.K8S.Kubeconfig.Value, m.K8S.Kubeconfig)
 	}
 }
 
@@ -387,6 +371,15 @@ func (r *inventoryResource) Create(ctx context.Context, req resource.CreateReque
 	created, err := r.client.CreateInventory(plan.toRequest())
 	if err != nil {
 		resp.Diagnostics.AddError("creating inventory", err.Error())
+		return
+	}
+
+	// The inventory now exists: record its id before the read-back, so a
+	// transient failure there cannot orphan it and duplicate it on the next
+	// apply.
+	plan.ID = types.StringValue(created.ID)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 

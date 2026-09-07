@@ -8,11 +8,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -110,8 +110,8 @@ func (r *inventoryResourceEntry) Schema(_ context.Context, _ resource.SchemaRequ
 				Computed: true,
 				Description: "Whether the resource is locked — no task may use a " +
 					"connector configured against it. Placed and lifted outside " +
-					"Terraform, by an operator.",
-				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
+					"Terraform, by an operator — which is why it plans as unknown: " +
+					"promising the state's value could contradict an operator's act.",
 			},
 		},
 	}
@@ -129,10 +129,8 @@ func (r *inventoryResourceEntry) Configure(_ context.Context, req resource.Confi
 	r.client = c
 }
 
-func (m *inventoryResourceEntryModel) toWire(ctx context.Context, diags interface {
-	AddError(summary, detail string)
-}) *client.InventoryResource {
-	res := &client.InventoryResource{
+func (m *inventoryResourceEntryModel) toWire(ctx context.Context, diags *diag.Diagnostics) *client.InventoryResourceRequest {
+	res := &client.InventoryResourceRequest{
 		URN:                  m.URN.ValueString(),
 		Name:                 m.Name.ValueString(),
 		Class:                m.Class.ValueString(),
@@ -142,19 +140,13 @@ func (m *inventoryResourceEntryModel) toWire(ctx context.Context, diags interfac
 	}
 	if !m.Endpoints.IsNull() && !m.Endpoints.IsUnknown() {
 		var endpoints []string
-		if d := m.Endpoints.ElementsAs(ctx, &endpoints, false); d.HasError() {
-			diags.AddError("reading endpoints", fmt.Sprintf("%v", d.Errors()))
-			return nil
-		}
+		diags.Append(m.Endpoints.ElementsAs(ctx, &endpoints, false)...)
 		for _, e := range endpoints {
 			res.Endpoints = append(res.Endpoints, client.InventoryResourceEndpoint{Endpoint: e})
 		}
 	}
 	if !m.Tags.IsNull() && !m.Tags.IsUnknown() {
-		if d := m.Tags.ElementsAs(ctx, &res.Tags, false); d.HasError() {
-			diags.AddError("reading tags", fmt.Sprintf("%v", d.Errors()))
-			return nil
-		}
+		diags.Append(m.Tags.ElementsAs(ctx, &res.Tags, false)...)
 	}
 	return res
 }
@@ -162,36 +154,30 @@ func (m *inventoryResourceEntryModel) toWire(ctx context.Context, diags interfac
 // refreshFromWire folds the server's view back into the model. Lists the
 // config left null stay null when the server holds nothing, rather than
 // flipping to empty and reporting phantom drift.
-func (m *inventoryResourceEntryModel) refreshFromWire(ctx context.Context, res *client.InventoryResource) []error {
+func (m *inventoryResourceEntryModel) refreshFromWire(ctx context.Context, res *client.InventoryResource, diags *diag.Diagnostics) {
 	m.ID = types.StringValue(res.URNID)
 	m.URN = types.StringValue(res.URN)
 	m.Name = types.StringValue(res.Name)
 	m.Class = types.StringValue(res.Class)
-	m.Subclass = syncString(m.Subclass, res.SubClass)
-	m.Service = syncString(m.Service, res.Service)
+	m.Subclass = stringOrNull(res.SubClass, m.Subclass)
+	m.Service = stringOrNull(res.Service, m.Service)
 	m.ExcludedFromCoverage = types.BoolValue(res.ExcludedFromCoverage)
 	m.Locked = types.BoolValue(res.Locked)
 
-	var errs []error
 	endpoints := make([]string, 0, len(res.Endpoints))
 	for _, e := range res.Endpoints {
 		endpoints = append(endpoints, e.Endpoint)
 	}
 	if len(endpoints) > 0 || !m.Endpoints.IsNull() {
 		v, d := types.ListValueFrom(ctx, types.StringType, endpoints)
-		if d.HasError() {
-			errs = append(errs, fmt.Errorf("endpoints: %v", d.Errors()))
-		}
+		diags.Append(d...)
 		m.Endpoints = v
 	}
 	if len(res.Tags) > 0 || !m.Tags.IsNull() {
 		v, d := types.ListValueFrom(ctx, types.StringType, res.Tags)
-		if d.HasError() {
-			errs = append(errs, fmt.Errorf("tags: %v", d.Errors()))
-		}
+		diags.Append(d...)
 		m.Tags = v
 	}
-	return errs
 }
 
 func (r *inventoryResourceEntry) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -211,6 +197,16 @@ func (r *inventoryResourceEntry) Create(ctx context.Context, req resource.Create
 		return
 	}
 
+	// The resource now exists: record its identity before the read-back, so a
+	// transient failure there cannot orphan it and duplicate it on the next
+	// apply.
+	plan.ID = types.StringValue(created.URNID)
+	plan.Locked = types.BoolValue(created.Locked)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// The create response does not echo endpoints; read back for the
 	// canonical state.
 	res, err := r.client.GetInventoryResource(plan.InventoryID.ValueString(), created.URNID)
@@ -218,9 +214,7 @@ func (r *inventoryResourceEntry) Create(ctx context.Context, req resource.Create
 		resp.Diagnostics.AddError("reading inventory resource after create", err.Error())
 		return
 	}
-	for _, e := range plan.refreshFromWire(ctx, res) {
-		resp.Diagnostics.AddError("refreshing inventory resource", e.Error())
-	}
+	plan.refreshFromWire(ctx, res, &resp.Diagnostics)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -241,9 +235,7 @@ func (r *inventoryResourceEntry) Read(ctx context.Context, req resource.ReadRequ
 		return
 	}
 
-	for _, e := range state.refreshFromWire(ctx, res) {
-		resp.Diagnostics.AddError("refreshing inventory resource", e.Error())
-	}
+	state.refreshFromWire(ctx, res, &resp.Diagnostics)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -270,9 +262,7 @@ func (r *inventoryResourceEntry) Update(ctx context.Context, req resource.Update
 		return
 	}
 	plan.InventoryID = state.InventoryID
-	for _, e := range plan.refreshFromWire(ctx, res) {
-		resp.Diagnostics.AddError("refreshing inventory resource", e.Error())
-	}
+	plan.refreshFromWire(ctx, res, &resp.Diagnostics)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
