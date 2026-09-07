@@ -136,7 +136,11 @@ output "initial_passwords" {
 }
 ```
 
-A self-managed inventory closes the loop from machine to backup:
+A self-managed inventory closes the loop from machine to backup. Inventories,
+stores, connectors and schedules are read through the badge's organization, so
+a tenant's fleet is declared through a provider alias re-scoped to it
+(`provider "plakar" { alias = "lyon", organization_id = ... }`) — the API key
+stays the root's, the badge does the traveling:
 
 ```hcl
 resource "plakar_inventory" "fleet" {

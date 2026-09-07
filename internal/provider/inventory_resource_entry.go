@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -208,11 +209,20 @@ func (r *inventoryResourceEntry) Create(ctx context.Context, req resource.Create
 	}
 
 	// The create response does not echo endpoints; read back for the
-	// canonical state.
-	res, err := r.client.GetInventoryResource(plan.InventoryID.ValueString(), created.URNID)
-	if err != nil {
-		resp.Diagnostics.AddError("reading inventory resource after create", err.Error())
-		return
+	// canonical state. Inventory reads trail the write — a fresh instance can
+	// answer 404 for a row the create just acknowledged — so a not-found here
+	// is retried rather than reported.
+	var res *client.InventoryResource
+	for deadline := time.Now().Add(30 * time.Second); ; {
+		res, err = r.client.GetInventoryResource(plan.InventoryID.ValueString(), created.URNID)
+		if err == nil {
+			break
+		}
+		if !client.IsNotFound(err) || time.Now().After(deadline) {
+			resp.Diagnostics.AddError("reading inventory resource after create", err.Error())
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 	plan.refreshFromWire(ctx, res, &resp.Diagnostics)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
