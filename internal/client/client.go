@@ -38,6 +38,12 @@ type Client struct {
 	// violation comes back as a 500. Terraform applies in parallel, so the
 	// race is one config away; see org.go.
 	inviteMu sync.Mutex
+
+	// resourceMu serializes inventory-resource mutations: every write forks
+	// the inventory's current row set into a new transaction, so two
+	// concurrent creates race the fork and the loser's row is lost — its
+	// post-create read answers 404 for good; see inventory.go.
+	resourceMu sync.Mutex
 }
 
 func New(apiURL, apiKey, organizationID string) *Client {

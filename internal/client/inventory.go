@@ -183,6 +183,8 @@ type InventoryResource struct {
 // The create response does not echo endpoints; callers wanting the canonical
 // state re-read the resource.
 func (c *Client) CreateInventoryResource(inventoryID string, res *InventoryResourceRequest) (*InventoryResource, error) {
+	c.resourceMu.Lock()
+	defer c.resourceMu.Unlock()
 	var out InventoryResource
 	if err := c.Do("POST", "/api/v1/inventories/"+inventoryID+"/resources",
 		res, nil, &out); err != nil {
@@ -203,11 +205,15 @@ func (c *Client) GetInventoryResource(inventoryID, urnID string) (*InventoryReso
 // UpdateInventoryResource sends the full-body POST v1 wants. The URN is
 // immutable server-side, which the resource surfaces as RequiresReplace.
 func (c *Client) UpdateInventoryResource(inventoryID, urnID string, res *InventoryResourceRequest) error {
+	c.resourceMu.Lock()
+	defer c.resourceMu.Unlock()
 	return c.Do("POST", "/api/v1/inventories/"+inventoryID+"/resources/"+urnID,
 		res, nil, nil)
 }
 
 func (c *Client) DeleteInventoryResource(inventoryID, urnID string) error {
+	c.resourceMu.Lock()
+	defer c.resourceMu.Unlock()
 	return c.Do("DELETE", "/api/v1/inventories/"+inventoryID+"/resources/"+urnID,
 		nil, nil, nil)
 }
