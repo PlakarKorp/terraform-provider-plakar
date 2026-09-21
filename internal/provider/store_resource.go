@@ -6,7 +6,9 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -94,9 +96,10 @@ func (r *storeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 				Required:    true,
 				ElementType: types.StringType,
 				Sensitive:   true,
-				Description: "Integration-specific configuration. Only the keys " +
-					"declared here are managed; anything else set server-side keeps " +
-					"its value.",
+				Description: "Integration-specific configuration. Must carry a " +
+					"non-empty `passphrase` when the store is initialized here: it " +
+					"encrypts the store at rest. Only the keys declared here are " +
+					"managed; anything else set server-side keeps its value.",
 			},
 			"environment": schema.StringAttribute{
 				Optional:    true,
@@ -117,10 +120,12 @@ func (r *storeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 				},
 			},
 			"initialize": schema.BoolAttribute{
-				Optional:    true,
-				Computed:    true,
-				Default:     booldefault.StaticBool(true),
-				Description: "Initialize the underlying storage at creation. Never re-runs on update.",
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(true),
+				Description: "Initialize the underlying storage at creation. Never " +
+					"re-runs on update. Set it to false when the storage is already " +
+					"initialized elsewhere, which also lifts the passphrase requirement.",
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
 				},
@@ -148,11 +153,102 @@ func (r *storeResource) Configure(_ context.Context, req resource.ConfigureReque
 	r.client = c
 }
 
+// ValidateConfig holds a store to the one field it cannot be created without:
+// a store is encrypted at rest with a passphrase, and the API accepts a create
+// with none — leaving a store that exists, validates, and has no key behind it.
+// Catching it here makes the miss a plan-time error instead of a live store
+// nobody can trust.
+func (r *storeResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var config storeModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(checkConfiguredPassphrase(&config)...)
+}
+
+// checkConfiguredPassphrase is the plan-time half of the check: everything that
+// can be decided from the configuration alone, before any value is resolved.
+func checkConfiguredPassphrase(config *storeModel) diag.Diagnostics {
+	var diags diag.Diagnostics
+	// initialize defaults to true, so only an explicit false opts out; a store
+	// that is not initialized here has its passphrase set wherever it was.
+	if !config.Initialize.IsNull() && !config.Initialize.IsUnknown() && !config.Initialize.ValueBool() {
+		return diags
+	}
+	// A map whose keys are not known yet says nothing about the passphrase.
+	if config.Fields.IsUnknown() {
+		return diags
+	}
+	if config.Fields.IsNull() {
+		diags.Append(missingPassphrase())
+		return diags
+	}
+	v, ok := config.Fields.Elements()["passphrase"]
+	if !ok {
+		diags.Append(missingPassphrase())
+		return diags
+	}
+	// A passphrase computed elsewhere (a variable, random_password) is only a
+	// value at apply time; Create checks it again for exactly this reason.
+	s, ok := v.(types.String)
+	if !ok || s.IsUnknown() {
+		return diags
+	}
+	if strings.TrimSpace(s.ValueString()) == "" {
+		diags.Append(emptyPassphrase())
+	}
+	return diags
+}
+
+// missingPassphrase and emptyPassphrase keep the wording identical between the
+// plan-time check and the apply-time one that catches computed values.
+func missingPassphrase() diag.Diagnostic {
+	return diag.NewAttributeErrorDiagnostic(path.Root("fields"),
+		"a store needs a passphrase",
+		"set fields.passphrase: it encrypts the store at rest, and the store "+
+			"cannot be created without one. Pass initialize = false if the "+
+			"underlying storage is already initialized elsewhere.")
+}
+
+func emptyPassphrase() diag.Diagnostic {
+	return diag.NewAttributeErrorDiagnostic(path.Root("fields").AtMapKey("passphrase"),
+		"the store passphrase is empty",
+		"fields.passphrase encrypts the store at rest; an empty one would "+
+			"leave the store readable by anyone who reaches the storage.")
+}
+
+// validatePassphrase re-checks at apply time what ValidateConfig could only
+// skip: a passphrase that was unknown during validation, because it comes from
+// a variable or another resource, and lands empty once resolved.
+func validatePassphrase(ctx context.Context, plan *storeModel, diags *diag.Diagnostics) {
+	fields := map[string]string{}
+	diags.Append(plan.Fields.ElementsAs(ctx, &fields, false)...)
+	if diags.HasError() {
+		return
+	}
+	pass, ok := fields["passphrase"]
+	if !ok {
+		diags.Append(missingPassphrase())
+		return
+	}
+	if strings.TrimSpace(pass) == "" {
+		diags.Append(emptyPassphrase())
+	}
+}
+
 func (r *storeResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan storeModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+
+	if plan.Initialize.ValueBool() {
+		validatePassphrase(ctx, &plan, &resp.Diagnostics)
+		if resp.Diagnostics.HasError() {
+			return
+		}
 	}
 
 	integration, err := r.client.IntegrationByName(plan.Integration.ValueString())
