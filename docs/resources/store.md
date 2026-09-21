@@ -32,7 +32,7 @@ resource "plakar_store" "offsite" {
 
 ### Required
 
-- `fields` (Map of String, Sensitive) Integration-specific configuration. Only the keys declared here are managed; anything else set server-side keeps its value.
+- `fields` (Map of String, Sensitive) Integration-specific configuration. Must carry a non-empty `passphrase` when the store is initialized here: it encrypts the store at rest. Only the keys declared here are managed; anything else set server-side keeps its value.
 - `integration` (String) Name of the installed integration backing the store, e.g. s3.
 - `name` (String) Name of the store, unique among stores in the organization.
 - `resource` (String) URN or name of the inventory resource the store attaches to.
@@ -42,7 +42,7 @@ resource "plakar_store" "offsite" {
 - `compression` (String) Compression for the store at initialization (GZIP, LZ4, ZSTD). Unset keeps the engine's default.
 - `data_classes` (List of String) Data classes the store accepts.
 - `environment` (String) Environment label, e.g. production.
-- `initialize` (Boolean) Initialize the underlying storage at creation. Never re-runs on update.
+- `initialize` (Boolean) Initialize the underlying storage at creation. Never re-runs on update. Set it to false when the storage is already initialized elsewhere, which also lifts the passphrase requirement.
 - `protocol` (String) Protocol spoken to the resource. Defaults to the integration name, which matches for the standard integrations.
 - `temperature` (String) Storage temperature. Computed by the server when not set.
 
