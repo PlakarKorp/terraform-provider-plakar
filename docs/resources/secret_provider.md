@@ -39,7 +39,7 @@ resource "plakar_secret_provider" "vault" {
 
 ### Required
 
-- `fields` (Map of String, Sensitive) Integration-specific configuration that may live in state, e.g. url for vault. Only the keys declared here are managed; anything else set server-side keeps its value.
+- `fields` (Map of String, Sensitive) Integration-specific configuration that may live in state, e.g. url for vault. Only the keys declared here are managed; anything else set server-side keeps its value. An import adopts only the keys the integration does not mark sensitive.
 - `integration` (String) Name of the installed integration backing the secret provider, e.g. vault.
 - `name` (String) Name of the secret provider, unique in the organization.
 

@@ -194,3 +194,60 @@ func testAccCheckConnectorFieldValue(name, key, want string) resource.TestCheckF
 		return nil
 	}
 }
+
+// testAccInventoryScalewayField reads one field of a scaleway inventory's
+// configuration from the server.
+func testAccInventoryScalewayField(s *terraform.State, name, key string) (client.Field, error) {
+	rs, ok := s.RootModule().Resources[name]
+	if !ok {
+		return client.Field{}, fmt.Errorf("%s not in state", name)
+	}
+	inv, err := testAccClient().GetInventory(rs.Primary.ID)
+	if err != nil {
+		return client.Field{}, err
+	}
+	if inv.Scaleway == nil {
+		return client.Field{}, fmt.Errorf("%s: the server has no scaleway configuration", name)
+	}
+	switch key {
+	case "scw_access_key":
+		return inv.Scaleway.AccessKey, nil
+	case "scw_secret_key":
+		return inv.Scaleway.SecretKey, nil
+	}
+	return client.Field{}, fmt.Errorf("unknown scaleway field %s", key)
+}
+
+// testAccCheckInventoryField checks that a scaleway inventory field is a
+// reference to the named secret provider at path.
+func testAccCheckInventoryField(name, key, spName, wantPath string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		f, err := testAccInventoryScalewayField(s, name, key)
+		if err != nil {
+			return err
+		}
+		sp, ok := s.RootModule().Resources[spName]
+		if !ok {
+			return fmt.Errorf("%s not in state", spName)
+		}
+		if f.Provider == nil || f.Provider.ID != sp.Primary.ID || f.Value != wantPath {
+			return fmt.Errorf("%s: the server does not hold %s as a reference to %s at %q", name, key, spName, wantPath)
+		}
+		return nil
+	}
+}
+
+// testAccCheckInventoryFieldValue checks a plain scaleway inventory field
+// against the expected value. The message never carries either value.
+func testAccCheckInventoryFieldValue(name, key, want string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		f, err := testAccInventoryScalewayField(s, name, key)
+		if err != nil {
+			return err
+		}
+		if f.Provider != nil || f.Value != want {
+			return fmt.Errorf("%s: the server's %s is not the expected plain value", name, key)
+		}
+		return nil
+	}
+}

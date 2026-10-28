@@ -6,8 +6,11 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -15,6 +18,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/PlakarKorp/terraform-provider-plakar/internal/client"
@@ -42,9 +46,52 @@ type inventoryOVHModel struct {
 }
 
 type inventoryScalewayModel struct {
-	ProjectID types.String `tfsdk:"project_id"`
-	AccessKey types.String `tfsdk:"access_key"`
-	SecretKey types.String `tfsdk:"secret_key"`
+	ProjectID          types.String `tfsdk:"project_id"`
+	AccessKey          types.String `tfsdk:"access_key"`
+	AccessKeySecret    types.Object `tfsdk:"access_key_secret"`
+	AccessKeyWO        types.String `tfsdk:"access_key_wo"`
+	AccessKeyWOVersion types.Int64  `tfsdk:"access_key_wo_version"`
+	SecretKey          types.String `tfsdk:"secret_key"`
+	SecretKeySecret    types.Object `tfsdk:"secret_key_secret"`
+	SecretKeyWO        types.String `tfsdk:"secret_key_wo"`
+	SecretKeyWOVersion types.Int64  `tfsdk:"secret_key_wo_version"`
+}
+
+func (m *inventoryScalewayModel) accessKey() credential {
+	return credential{&m.AccessKey, &m.AccessKeySecret, &m.AccessKeyWO, &m.AccessKeyWOVersion}
+}
+
+func (m *inventoryScalewayModel) secretKey() credential {
+	return credential{&m.SecretKey, &m.SecretKeySecret, &m.SecretKeyWO, &m.SecretKeyWOVersion}
+}
+
+// loadWriteOnly copies the write-only credentials from the configuration into
+// the model: the plan never carries them.
+func (m *inventoryModel) loadWriteOnly(ctx context.Context, config tfsdk.Config, diags *diag.Diagnostics) {
+	if m.Scaleway != nil {
+		diags.Append(config.GetAttribute(ctx, path.Root("scaleway").AtName("access_key_wo"), &m.Scaleway.AccessKeyWO)...)
+		diags.Append(config.GetAttribute(ctx, path.Root("scaleway").AtName("secret_key_wo"), &m.Scaleway.SecretKeyWO)...)
+	}
+}
+
+// clearWriteOnly empties the write-only credentials before the model is
+// written to state.
+func (m *inventoryModel) clearWriteOnly() {
+	if m.Scaleway != nil {
+		m.Scaleway.AccessKeyWO = types.StringNull()
+		m.Scaleway.SecretKeyWO = types.StringNull()
+	}
+}
+
+// newInventoryScalewayModel is an empty block whose object and number
+// attributes carry their types, as state requires even of nulls.
+func newInventoryScalewayModel() *inventoryScalewayModel {
+	return &inventoryScalewayModel{
+		AccessKeySecret: types.ObjectNull(secretFieldAttrTypes), AccessKeyWO: types.StringNull(),
+		AccessKeyWOVersion: types.Int64Null(),
+		SecretKeySecret:    types.ObjectNull(secretFieldAttrTypes), SecretKeyWO: types.StringNull(),
+		SecretKeyWOVersion: types.Int64Null(),
+	}
 }
 
 type inventoryGCPModel struct {
@@ -153,12 +200,14 @@ func (r *inventoryResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				},
 			},
 			"scaleway": schema.SingleNestedBlock{
-				Description: "Configuration of a scaleway inventory.",
-				Attributes: map[string]schema.Attribute{
-					"project_id": schema.StringAttribute{Optional: true},
-					"access_key": schema.StringAttribute{Optional: true, Sensitive: true},
-					"secret_key": schema.StringAttribute{Optional: true, Sensitive: true},
-				},
+				Description: "Configuration of a scaleway inventory. Each credential " +
+					"can be given plainly, as a reference to a secret provider " +
+					"(<name>_secret), or write-only (<name>_wo).",
+				Attributes: mergeAttributes(
+					map[string]schema.Attribute{"project_id": schema.StringAttribute{Optional: true}},
+					credentialAttributes("access_key", "Scaleway access key."),
+					credentialAttributes("secret_key", "Scaleway secret key."),
+				),
 			},
 			"gcp": schema.SingleNestedBlock{
 				Description: "Configuration of a gcp inventory.",
@@ -289,9 +338,9 @@ func (r *inventoryResource) ValidateConfig(ctx context.Context, req resource.Val
 	case "scaleway":
 		require("scaleway", map[string]types.String{
 			"project_id": config.Scaleway.ProjectID,
-			"access_key": config.Scaleway.AccessKey,
-			"secret_key": config.Scaleway.SecretKey,
 		})
+		config.Scaleway.accessKey().validate("scaleway", "access_key", true, &resp.Diagnostics)
+		config.Scaleway.secretKey().validate("scaleway", "secret_key", true, &resp.Diagnostics)
 	case "gcp":
 		require("gcp", map[string]types.String{
 			"project_id": config.GCP.ProjectID,
@@ -310,7 +359,167 @@ func field(v types.String) client.Field {
 	return client.Field{Value: v.ValueString()}
 }
 
-func (m *inventoryModel) toRequest() *client.InventoryRequest {
+// credential is one sensitive inventory attribute, in the three forms a
+// configuration can give it: a plain value, which lands in state; a reference
+// to a secret provider (<attr>_secret), resolved by Plakar at run time; or a
+// write-only value (<attr>_wo), which Plakar holds and state never does.
+type credential struct {
+	Plain     *types.String
+	Ref       *types.Object
+	WO        *types.String
+	WOVersion *types.Int64
+}
+
+// mergeAttributes joins attribute maps into one block's attributes.
+func mergeAttributes(maps ...map[string]schema.Attribute) map[string]schema.Attribute {
+	out := map[string]schema.Attribute{}
+	for _, m := range maps {
+		for k, v := range m {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// credentialAttributes is the schema of one credential in its three forms.
+func credentialAttributes(name, description string) map[string]schema.Attribute {
+	return map[string]schema.Attribute{
+		name: schema.StringAttribute{
+			Optional:    true,
+			Sensitive:   true,
+			Description: description + " Lands in state; see " + name + "_secret and " + name + "_wo.",
+		},
+		name + "_secret": schema.SingleNestedAttribute{
+			Optional: true,
+			Description: "Resolve " + name + " from a secret provider each time " +
+				"Plakar needs it: only the path is stored.",
+			Attributes: map[string]schema.Attribute{
+				"provider": schema.StringAttribute{
+					Required:    true,
+					Description: "Id of the plakar_secret_provider holding the secret.",
+				},
+				"path": schema.StringAttribute{
+					Required: true,
+					Description: "Where the secret lives in the provider. For Vault: " +
+						"{secret_engine}/{path}#{field}.",
+				},
+			},
+		},
+		name + "_wo": schema.StringAttribute{
+			Optional:  true,
+			WriteOnly: true,
+			Sensitive: true,
+			Description: "Write-only " + name + ": Plakar holds it, state never " +
+				"does. Requires Terraform 1.11 or later. Sent at creation, when " +
+				name + "_wo_version changes, and when it replaces another form.",
+		},
+		name + "_wo_version": schema.Int64Attribute{
+			Optional:    true,
+			Description: "Change this to send " + name + "_wo again.",
+		},
+	}
+}
+
+// forms counts the forms the configuration sets, an unknown one included.
+func (c credential) forms() int {
+	n := 0
+	if !c.Plain.IsNull() {
+		n++
+	}
+	if !c.Ref.IsNull() {
+		n++
+	}
+	if !c.WO.IsNull() {
+		n++
+	}
+	return n
+}
+
+// validate reports a credential set in more than one form, a reference with
+// an empty path or provider, and, when required, one set in none.
+func (c credential) validate(block, name string, required bool, diags *diag.Diagnostics) {
+	at := path.Root(block).AtName(name)
+	switch n := c.forms(); {
+	case n > 1:
+		diags.AddAttributeError(at, "credential set twice",
+			fmt.Sprintf("set one of %s.%s, %s.%s_secret and %s.%s_wo.", block, name, block, name, block, name))
+	case n == 0 && required:
+		diags.AddAttributeError(at, "missing required field",
+			fmt.Sprintf("a %s inventory needs %s.%s, %s.%s_secret or %s.%s_wo", block, block, name, block, name, block, name))
+	}
+	if c.Ref.IsNull() || c.Ref.IsUnknown() {
+		return
+	}
+	for _, attrName := range []string{"provider", "path"} {
+		v, ok := c.Ref.Attributes()[attrName].(types.String)
+		if ok && !v.IsUnknown() && !v.IsNull() && strings.TrimSpace(v.ValueString()) == "" {
+			diags.AddAttributeError(path.Root(block).AtName(name+"_secret").AtName(attrName),
+				"empty secret field "+attrName,
+				fmt.Sprintf("%s.%s_secret needs a non-empty %s.", block, name, attrName))
+		}
+	}
+}
+
+// wire builds the field a request sends. The inventory update is a full-body
+// POST that replaces the configuration, so a write-only value that is not
+// sent this time goes out as the server's current field instead of empty: it
+// is sent at creation (prior is nil), when its version moved, when the prior
+// state held the credential in another form, and when the server holds a
+// reference that the configuration no longer has.
+func (c credential) wire(prior *credential, current client.Field) client.Field {
+	switch {
+	case !c.Plain.IsNull():
+		return client.Field{Value: c.Plain.ValueString()}
+	case !c.Ref.IsNull():
+		provider, _ := c.Ref.Attributes()["provider"].(types.String)
+		ref, _ := c.Ref.Attributes()["path"].(types.String)
+		return client.Field{Value: ref.ValueString(), Provider: &client.FieldProvider{ID: provider.ValueString()}}
+	case !c.WO.IsNull():
+		if prior == nil || !c.WOVersion.Equal(*prior.WOVersion) ||
+			!prior.Plain.IsNull() || !prior.Ref.IsNull() || current.Provider != nil {
+			return client.Field{Value: c.WO.ValueString()}
+		}
+		return current
+	default:
+		return client.Field{}
+	}
+}
+
+// refresh folds the server's field back into the form the configuration
+// uses, never putting a plain secret anywhere the configuration did not put
+// it. A reference the configuration holds as a plain value refreshes to its
+// path, and a plain value it holds as a reference to an empty reference, so
+// the plan shows either change. A plain value is only adopted into an
+// attribute already holding one: after an import, a write-only or unset
+// credential stays server-side.
+func (c credential) refresh(server client.Field) {
+	*c.WO = types.StringNull()
+	if server.Provider != nil {
+		if !c.Plain.IsNull() {
+			*c.Plain = types.StringValue(server.Value)
+			return
+		}
+		*c.Ref = types.ObjectValueMust(secretFieldAttrTypes, map[string]attr.Value{
+			"provider": types.StringValue(server.Provider.ID),
+			"path":     types.StringValue(server.Value),
+		})
+		return
+	}
+	switch {
+	case !c.Plain.IsNull():
+		*c.Plain = stringOrNull(server.Value, *c.Plain)
+	case !c.Ref.IsNull():
+		*c.Ref = types.ObjectValueMust(secretFieldAttrTypes, map[string]attr.Value{
+			"provider": types.StringValue(""),
+			"path":     types.StringValue(""),
+		})
+	}
+}
+
+// toRequest builds the create body, and the update body when prior (the
+// state) and current (the server's inventory) are given: write-only values
+// that are not sent again go out as the server's current field.
+func (m *inventoryModel) toRequest(prior *inventoryModel, current *client.Inventory) *client.InventoryRequest {
 	req := &client.InventoryRequest{
 		Name: m.Name.ValueString(),
 		Type: m.Type.ValueString(),
@@ -331,10 +540,19 @@ func (m *inventoryModel) toRequest() *client.InventoryRequest {
 			Endpoint:          m.OVH.Endpoint.ValueString(),
 		}
 	case m.Scaleway != nil:
+		var priorAccess, priorSecret *credential
+		var currentAccess, currentSecret client.Field
+		if prior != nil && prior.Scaleway != nil {
+			a, s := prior.Scaleway.accessKey(), prior.Scaleway.secretKey()
+			priorAccess, priorSecret = &a, &s
+		}
+		if current != nil && current.Scaleway != nil {
+			currentAccess, currentSecret = current.Scaleway.AccessKey, current.Scaleway.SecretKey
+		}
 		req.Scaleway = &client.ScalewayInventoryConfig{
 			ProjectID: field(m.Scaleway.ProjectID),
-			AccessKey: field(m.Scaleway.AccessKey),
-			SecretKey: field(m.Scaleway.SecretKey),
+			AccessKey: m.Scaleway.accessKey().wire(priorAccess, currentAccess),
+			SecretKey: m.Scaleway.secretKey().wire(priorSecret, currentSecret),
 		}
 	case m.GCP != nil:
 		req.GCP = &client.GCPInventoryConfig{
@@ -387,11 +605,11 @@ func (m *inventoryModel) refreshFromInventory(inv *client.Inventory) {
 		m.OVH.Endpoint = stringOrNull(inv.OVH.Endpoint, m.OVH.Endpoint)
 	case inv.Scaleway != nil:
 		if m.Scaleway == nil {
-			m.Scaleway = &inventoryScalewayModel{}
+			m.Scaleway = newInventoryScalewayModel()
 		}
 		m.Scaleway.ProjectID = stringOrNull(inv.Scaleway.ProjectID.Value, m.Scaleway.ProjectID)
-		m.Scaleway.AccessKey = stringOrNull(inv.Scaleway.AccessKey.Value, m.Scaleway.AccessKey)
-		m.Scaleway.SecretKey = stringOrNull(inv.Scaleway.SecretKey.Value, m.Scaleway.SecretKey)
+		m.Scaleway.accessKey().refresh(inv.Scaleway.AccessKey)
+		m.Scaleway.secretKey().refresh(inv.Scaleway.SecretKey)
 	case inv.GCP != nil:
 		if m.GCP == nil {
 			m.GCP = &inventoryGCPModel{}
@@ -422,7 +640,12 @@ func (r *inventoryResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
-	created, err := r.client.CreateInventory(plan.toRequest())
+	plan.loadWriteOnly(ctx, req.Config, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	created, err := r.client.CreateInventory(plan.toRequest(nil, nil))
+	plan.clearWriteOnly()
 	if err != nil {
 		resp.Diagnostics.AddError("creating inventory", err.Error())
 		return
@@ -477,7 +700,20 @@ func (r *inventoryResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	if err := r.client.UpdateInventory(state.ID.ValueString(), plan.toRequest()); err != nil {
+	// The update replaces the whole configuration: a write-only credential
+	// that is not sent again has to go out as the one the server holds.
+	current, err := r.client.GetInventory(state.ID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("reading inventory before update", err.Error())
+		return
+	}
+	plan.loadWriteOnly(ctx, req.Config, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	ireq := plan.toRequest(&state, current)
+	plan.clearWriteOnly()
+	if err := r.client.UpdateInventory(state.ID.ValueString(), ireq); err != nil {
 		resp.Diagnostics.AddError("updating inventory", err.Error())
 		return
 	}

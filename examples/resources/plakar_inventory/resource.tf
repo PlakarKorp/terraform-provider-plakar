@@ -18,3 +18,25 @@ resource "plakar_inventory" "aws" {
     region            = "eu-west-1"
   }
 }
+
+# A scaleway inventory keeps its keys out of state: the access key resolved
+# from Vault, the secret key write-only. Each credential takes one of three
+# forms: <name>, <name>_secret or <name>_wo. Other inventory types take
+# plain values only for now.
+variable "scw_secret_key" {
+  type      = string
+  sensitive = true
+  ephemeral = true
+}
+
+resource "plakar_inventory" "scaleway" {
+  name = "Scaleway production"
+  type = "scaleway"
+
+  scaleway {
+    project_id            = "11111111-2222-3333-4444-555555555555"
+    access_key_secret     = { provider = plakar_secret_provider.vault.id, path = "secret/inventories/scaleway#access_key" }
+    secret_key_wo         = var.scw_secret_key
+    secret_key_wo_version = 1
+  }
+}

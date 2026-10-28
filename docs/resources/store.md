@@ -110,7 +110,7 @@ resource "plakar_store" "offsite_write_only" {
 
 ### Required
 
-- `fields` (Map of String, Sensitive) Integration-specific configuration. Must carry a non-empty `passphrase` when the store is initialized here: it encrypts the store at rest. Only the keys declared here are managed; anything else set server-side keeps its value.
+- `fields` (Map of String, Sensitive) Integration-specific configuration. Must carry a non-empty `passphrase` when the store is initialized here: it encrypts the store at rest. Only the keys declared here are managed; anything else set server-side keeps its value. An import adopts only the keys the integration does not mark sensitive; declare the others again, in any form.
 - `integration` (String) Name of the installed integration backing the store, e.g. s3.
 - `name` (String) Name of the store, unique among stores in the organization.
 - `resource` (String) URN or name of the inventory resource the store attaches to.

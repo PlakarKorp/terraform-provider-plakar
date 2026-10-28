@@ -92,7 +92,7 @@ resource "plakar_connector" "bucket_write_only" {
 
 ### Required
 
-- `fields` (Map of String, Sensitive) Integration-specific configuration. Only the keys declared here are managed; anything else set server-side keeps its value.
+- `fields` (Map of String, Sensitive) Integration-specific configuration. Only the keys declared here are managed; anything else set server-side keeps its value. An import adopts only the keys the integration does not mark sensitive; declare the others again, in any form.
 - `integration` (String) Name of the installed integration backing the connector, e.g. s3 or sftp.
 - `name` (String) Name of the connector, unique per connector type in the organization.
 - `resource` (String) URN or name of the inventory resource the connector attaches to.

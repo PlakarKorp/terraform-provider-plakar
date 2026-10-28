@@ -85,7 +85,9 @@ func (r *secretProviderResource) Schema(_ context.Context, _ resource.SchemaRequ
 				Sensitive:   true,
 				Description: "Integration-specific configuration that may live in " +
 					"state, e.g. url for vault. Only the keys declared here are " +
-					"managed; anything else set server-side keeps its value.",
+					"managed; anything else set server-side keeps its value. An " +
+					"import adopts only the keys the integration does not mark " +
+					"sensitive.",
 			},
 			"fields_wo":         fieldsWO,
 			"fields_wo_version": fieldsWOVersion,

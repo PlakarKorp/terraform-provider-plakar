@@ -179,6 +179,9 @@ Or pass it in `fields_wo`, which Terraform 1.11 and later never write to
 state: Plakar keeps the value, and bumping `fields_wo_version` sends a new
 one. Feed write-only values from `ephemeral` variables, or the plan file
 records them.
+A `scaleway` inventory takes its keys the same ways, through
+`<name>_secret` and `<name>_wo` beside each key; the other inventory types
+take plain values only, for now.
 
 Destroying a `plakar_store` removes the store from Plakar; data in the
 underlying storage is not touched.
