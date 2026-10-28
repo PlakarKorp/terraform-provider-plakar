@@ -158,6 +158,25 @@ data "plakar_secret_provider" "lab" {
 	})
 }
 
+// Looking up a secret provider that does not exist is an error naming it, not
+// an empty result a configuration would carry on with.
+func TestAccSecretProvider_dataSourceNotFound(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: fmt.Sprintf(`
+data "plakar_secret_provider" "missing" {
+  name = "TF acceptance no such secret provider %s"
+}
+`, acctest.RandString(8)),
+				ExpectError: regexp.MustCompile(`secret provider not found`),
+			},
+		},
+	})
+}
+
 // The canary check has to be able to fail: with the token in fields, where it
 // does belong to state, the same check must report it.
 func TestAccSecretProvider_canaryCatchesLeak(t *testing.T) {
