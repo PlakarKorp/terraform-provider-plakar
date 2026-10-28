@@ -47,8 +47,8 @@ resource "plakar_secret_provider" "vault" {
 
 > **NOTE**: [Write-only arguments](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments) are supported in Terraform 1.11 and later.
 
-- `fields_wo` (Map of String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Integration-specific configuration that never lands in state, e.g. token for vault. Requires Terraform 1.11 or later. Its values are sent at creation and then only when fields_wo_version changes: Terraform cannot compare a write-only value with anything, so the version is what rotates it. A key may not appear in both fields and fields_wo. A key removed from fields_wo keeps its server-side value, as for fields. An import cannot recover it: after one, keep fields_wo in the configuration and bump fields_wo_version to send it again.
-- `fields_wo_version` (Number) Change this to send fields_wo again, for instance after rotating the credential it carries.
+- `fields_wo` (Map of String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Integration-specific configuration that never lands in state, e.g. token for vault. Requires Terraform 1.11 or later. Its values are sent at creation, when fields_wo_version changes, and for a key that has just moved here from another form: Terraform cannot compare a write-only value with anything, so the version is what rotates it. A key may be set in one form only. A key removed from fields_wo keeps its server-side value, as for fields. An import cannot recover it: after one, keep fields_wo in the configuration and bump fields_wo_version to send it again.
+- `fields_wo_version` (Number) Change this to send fields_wo again, for instance after rotating a credential it carries.
 - `protocol` (String) Protocol spoken to the secret manager. Defaults to the one the integration declares for secret providers; unlike stores it does not share the integration's name (vault speaks vault-sm).
 
 ### Read-Only

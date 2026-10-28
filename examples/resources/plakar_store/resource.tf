@@ -27,3 +27,30 @@ resource "plakar_store" "offsite_vault" {
     secret_access_key = { provider = plakar_secret_provider.vault.id, path = "secret/backups/offsite#secret_access_key" }
   }
 }
+
+# Or with the passphrase write-only: Plakar holds it, Terraform state never
+# does. Requires Terraform 1.11 or later; bump fields_wo_version to send a
+# new value.
+variable "offsite_passphrase" {
+  type      = string
+  sensitive = true
+  ephemeral = true
+}
+
+resource "plakar_store" "offsite_write_only" {
+  name        = "Offsite S3 (write-only)"
+  integration = "s3"
+  resource    = "Ample Sky"
+  environment = "production"
+  fields = {
+    root = "/backups"
+  }
+  fields_wo = {
+    passphrase = var.offsite_passphrase
+  }
+  fields_wo_version = 1
+  secret_fields = {
+    access_key        = { provider = plakar_secret_provider.vault.id, path = "secret/backups/offsite#access_key" }
+    secret_access_key = { provider = plakar_secret_provider.vault.id, path = "secret/backups/offsite#secret_access_key" }
+  }
+}

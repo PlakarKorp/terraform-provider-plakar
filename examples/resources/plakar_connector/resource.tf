@@ -24,3 +24,24 @@ resource "plakar_connector" "bucket" {
     secret_access_key = { provider = plakar_secret_provider.vault.id, path = "secret/sources/media#secret_access_key" }
   }
 }
+
+variable "media_secret_key" {
+  type      = string
+  sensitive = true
+  ephemeral = true
+}
+
+resource "plakar_connector" "bucket_write_only" {
+  name        = "Media bucket (write-only)"
+  type        = "source"
+  integration = "s3"
+  resource    = "urn:res-quiet-harbor"
+  fields = {
+    root       = "/"
+    access_key = "SCW-ACCESS-KEY-ID"
+  }
+  fields_wo = {
+    secret_access_key = var.media_secret_key
+  }
+  fields_wo_version = 1
+}

@@ -81,8 +81,6 @@ func TestValidatePassphrase(t *testing.T) {
 	}
 }
 
-var _ resource.ResourceWithValidateConfig = &connectorResource{}
-
 func secretFieldsMap(t *testing.T, refs map[string][2]string) types.Map {
 	t.Helper()
 	elems := map[string]attr.Value{}
@@ -155,5 +153,65 @@ func TestCheckFieldForms_secretFields(t *testing.T) {
 	)
 	if !diags.HasError() {
 		t.Fatal("a key set in both fields and secret_fields was accepted")
+	}
+}
+
+// A write-only passphrase satisfies the check, and is held to non-empty like
+// a plain one: at plan time when it is known, at apply time in any case.
+func TestCheckConfiguredPassphrase_writeOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		writeOnly types.Map
+		wantErr   bool
+	}{
+		{"write-only passphrase", fieldsMap(t, map[string]string{"passphrase": "correcthorsebatterystaple"}), false},
+		{"empty write-only passphrase", fieldsMap(t, map[string]string{"passphrase": " "}), true},
+		{"write-only, but no passphrase", fieldsMap(t, map[string]string{"region": "fr-par"}), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := storeModel{Fields: fieldsMap(t, map[string]string{"root": "/x"}), FieldsWO: tc.writeOnly, Initialize: types.BoolValue(true)}
+			if got := checkConfiguredPassphrase(&model).HasError(); got != tc.wantErr {
+				t.Fatalf("HasError() = %v, want %v", got, tc.wantErr)
+			}
+			var applied diag.Diagnostics
+			validatePassphrase(context.Background(), &model, &applied)
+			if got := applied.HasError(); got != tc.wantErr {
+				t.Fatalf("apply-time HasError() = %v, want %v", got, tc.wantErr)
+			}
+		})
+	}
+}
+
+// What an update sends of fields_wo: everything on a version bump, otherwise
+// only the keys that just moved in from another form.
+func TestWriteOnlyFieldsToSend(t *testing.T) {
+	ctx := context.Background()
+	config := fieldsMap(t, map[string]string{"passphrase": "p", "region": "fr-par"})
+	for _, tc := range []struct {
+		name  string
+		all   bool
+		prior []types.Map
+		want  []string
+	}{
+		{"version bumped", true, nil, []string{"passphrase", "region"}},
+		{"nothing moved", false, []types.Map{fieldsMap(t, map[string]string{"root": "/x"})}, nil},
+		{"region moved from fields", false, []types.Map{fieldsMap(t, map[string]string{"region": "nl-ams"})}, []string{"region"}},
+		{"region moved from secret_fields", false, []types.Map{
+			types.MapNull(types.StringType),
+			secretFieldsMap(t, map[string][2]string{"region": {"sp", "secret/x#region"}}),
+		}, []string{"region"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var diags diag.Diagnostics
+			got := writeOnlyFieldsToSend(ctx, config, tc.all, tc.prior, &diags)
+			if len(got) != len(tc.want) {
+				t.Fatalf("sends %d keys, want %v", len(got), tc.want)
+			}
+			for _, k := range tc.want {
+				if _, ok := got[k]; !ok {
+					t.Errorf("does not send %s", k)
+				}
+			}
+		})
 	}
 }

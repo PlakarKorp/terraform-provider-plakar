@@ -45,6 +45,7 @@ func (r *secretProviderResource) Metadata(_ context.Context, req resource.Metada
 }
 
 func (r *secretProviderResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	fieldsWO, fieldsWOVersion := writeOnlyFieldsAttributes("token for vault")
 	resp.Schema = schema.Schema{
 		Description: "A Plakar secret provider: an external secret manager that " +
 			"store, connector and inventory credentials can be resolved from at " +
@@ -86,26 +87,8 @@ func (r *secretProviderResource) Schema(_ context.Context, _ resource.SchemaRequ
 					"state, e.g. url for vault. Only the keys declared here are " +
 					"managed; anything else set server-side keeps its value.",
 			},
-			"fields_wo": schema.MapAttribute{
-				Optional:    true,
-				WriteOnly:   true,
-				Sensitive:   true,
-				ElementType: types.StringType,
-				Description: "Integration-specific configuration that never lands " +
-					"in state, e.g. token for vault. Requires Terraform 1.11 or " +
-					"later. Its values are sent at creation and then only when " +
-					"fields_wo_version changes: Terraform cannot compare a " +
-					"write-only value with anything, so the version is what " +
-					"rotates it. A key may not appear in both fields and fields_wo. " +
-					"A key removed from fields_wo keeps its server-side value, as " +
-					"for fields. An import cannot recover it: after one, keep fields_wo in the " +
-					"configuration and bump fields_wo_version to send it again.",
-			},
-			"fields_wo_version": schema.Int64Attribute{
-				Optional: true,
-				Description: "Change this to send fields_wo again, for instance " +
-					"after rotating the credential it carries.",
-			},
+			"fields_wo":         fieldsWO,
+			"fields_wo_version": fieldsWOVersion,
 		},
 	}
 }
@@ -204,21 +187,12 @@ func checkRequiredFields(protocol *client.IntegrationProtocol, fields map[string
 	}
 }
 
-// secretProviderFields writes the declared plain fields and, when send is
-// set, the write-only ones over a field map.
-func secretProviderFields(ctx context.Context, into map[string]client.Field, plain, writeOnly types.Map, send bool, diags *diag.Diagnostics) {
-	// ElementsAs replaces the target map rather than adding to it, so each
-	// form is decoded on its own.
-	forms := []types.Map{plain}
-	if send && !writeOnly.IsNull() && !writeOnly.IsUnknown() {
-		forms = append(forms, writeOnly)
-	}
-	for _, form := range forms {
-		values := map[string]string{}
-		diags.Append(form.ElementsAs(ctx, &values, false)...)
-		for k, v := range values {
-			into[k] = client.Field{Value: v}
-		}
+// secretProviderFields writes the declared plain fields over a field map.
+func secretProviderFields(ctx context.Context, into map[string]client.Field, plain types.Map, diags *diag.Diagnostics) {
+	values := map[string]string{}
+	diags.Append(plain.ElementsAs(ctx, &values, false)...)
+	for k, v := range values {
+		into[k] = client.Field{Value: v}
 	}
 }
 
@@ -249,7 +223,10 @@ func (r *secretProviderResource) Create(ctx context.Context, req resource.Create
 		Fields:   map[string]client.Field{},
 	}
 	sreq.Integration.ID = integration.ID
-	secretProviderFields(ctx, sreq.Fields, plan.Fields, writeOnly, true, &resp.Diagnostics)
+	secretProviderFields(ctx, sreq.Fields, plan.Fields, &resp.Diagnostics)
+	for k, v := range writeOnlyFieldsToSend(ctx, writeOnly, true, nil, &resp.Diagnostics) {
+		sreq.Fields[k] = client.Field{Value: v}
+	}
 	checkRequiredFields(protocol, sreq.Fields, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
@@ -387,8 +364,11 @@ func (r *secretProviderResource) Update(ctx context.Context, req resource.Update
 	for k, v := range current.Fields {
 		sreq.Fields[k] = v
 	}
-	send := !plan.FieldsWOVersion.Equal(state.FieldsWOVersion)
-	secretProviderFields(ctx, sreq.Fields, plan.Fields, writeOnly, send, &resp.Diagnostics)
+	secretProviderFields(ctx, sreq.Fields, plan.Fields, &resp.Diagnostics)
+	for k, v := range writeOnlyFieldsToSend(ctx, writeOnly, !plan.FieldsWOVersion.Equal(state.FieldsWOVersion),
+		[]types.Map{state.Fields}, &resp.Diagnostics) {
+		sreq.Fields[k] = client.Field{Value: v}
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}

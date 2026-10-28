@@ -20,24 +20,27 @@ import (
 // connectorFacet is the connector-shaped slice both the store and connector
 // models expose, so the request-building and refresh logic exists once.
 type connectorFacet struct {
-	Name         *types.String
-	Integration  *types.String
-	Protocol     *types.String
-	Resource     *types.String
-	URNID        *types.String
-	Fields       *types.Map
-	SecretFields *types.Map
-	Environment  *types.String
-	DataClasses  *types.List
-	Temperature  *types.String
+	Name            *types.String
+	Integration     *types.String
+	Protocol        *types.String
+	Resource        *types.String
+	URNID           *types.String
+	Fields          *types.Map
+	SecretFields    *types.Map
+	FieldsWO        *types.Map
+	FieldsWOVersion *types.Int64
+	Environment     *types.String
+	DataClasses     *types.List
+	Temperature     *types.String
 }
 
 func (m *storeModel) facet() *connectorFacet {
 	return &connectorFacet{
 		Name: &m.Name, Integration: &m.Integration, Protocol: &m.Protocol,
 		Resource: &m.Resource, URNID: &m.URNID, Fields: &m.Fields,
-		SecretFields: &m.SecretFields,
-		Environment:  &m.Environment, DataClasses: &m.DataClasses,
+		SecretFields: &m.SecretFields, FieldsWO: &m.FieldsWO,
+		FieldsWOVersion: &m.FieldsWOVersion,
+		Environment:     &m.Environment, DataClasses: &m.DataClasses,
 		Temperature: &m.Temperature,
 	}
 }
@@ -77,6 +80,60 @@ func secretFieldsAttribute() schema.MapNestedAttribute {
 			},
 		},
 	}
+}
+
+// writeOnlyFieldsAttributes is the fields_wo and fields_wo_version pair the
+// store, connector and secret provider share; example names a key that
+// belongs there.
+func writeOnlyFieldsAttributes(example string) (schema.MapAttribute, schema.Int64Attribute) {
+	return schema.MapAttribute{
+			Optional:    true,
+			WriteOnly:   true,
+			Sensitive:   true,
+			ElementType: types.StringType,
+			Description: "Integration-specific configuration that never lands in " +
+				"state, e.g. " + example + ". Requires Terraform 1.11 or later. " +
+				"Its values are sent at creation, when fields_wo_version changes, " +
+				"and for a key that has just moved here from another form: " +
+				"Terraform cannot compare a write-only value with anything, so " +
+				"the version is what rotates it. A key may be set in one form " +
+				"only. A key removed from fields_wo keeps its server-side value, " +
+				"as for fields. An import cannot recover it: after one, keep " +
+				"fields_wo in the configuration and bump fields_wo_version to " +
+				"send it again.",
+		}, schema.Int64Attribute{
+			Optional: true,
+			Description: "Change this to send fields_wo again, for instance " +
+				"after rotating a credential it carries.",
+		}
+}
+
+// writeOnlyFieldsToSend picks the write-only values a request sends: all of
+// them at creation and when fields_wo_version moved, otherwise only those
+// whose key was set in another form before, so a field moved into fields_wo
+// does not keep its old form server-side. Anything else keeps its
+// server-side value, the one sent last.
+func writeOnlyFieldsToSend(ctx context.Context, config types.Map, all bool, priorForms []types.Map, diags *diag.Diagnostics) map[string]string {
+	send := map[string]string{}
+	if config.IsNull() || config.IsUnknown() {
+		return send
+	}
+	values := map[string]string{}
+	diags.Append(config.ElementsAs(ctx, &values, false)...)
+	if all {
+		return values
+	}
+	for k, v := range values {
+		for _, form := range priorForms {
+			if form.IsNull() || form.IsUnknown() {
+				continue
+			}
+			if _, ok := form.Elements()[k]; ok {
+				send[k] = v
+			}
+		}
+	}
+	return send
 }
 
 // checkSecretFields refuses a reference with an empty path or provider: the
@@ -119,9 +176,10 @@ func writeSecretFields(ctx context.Context, into map[string]client.Field, m type
 	}
 }
 
-// connectorRequestFromFacet builds a create request from the plan. The caller
-// fills URNID and Integration.ID from the resolved lookups.
-func connectorRequestFromFacet(ctx context.Context, m *connectorFacet, kind string, diags *diag.Diagnostics) *client.ConnectorRequest {
+// connectorRequestFromFacet builds a create request from the plan and the
+// write-only values, which only the configuration carries. The caller fills
+// URNID and Integration.ID from the resolved lookups.
+func connectorRequestFromFacet(ctx context.Context, m *connectorFacet, kind string, writeOnly map[string]string, diags *diag.Diagnostics) *client.ConnectorRequest {
 	req := &client.ConnectorRequest{
 		Name:        m.Name.ValueString(),
 		Type:        kind,
@@ -137,6 +195,9 @@ func connectorRequestFromFacet(ctx context.Context, m *connectorFacet, kind stri
 		req.Fields[k] = client.Field{Value: v}
 	}
 	writeSecretFields(ctx, req.Fields, *m.SecretFields, diags)
+	for k, v := range writeOnly {
+		req.Fields[k] = client.Field{Value: v}
+	}
 	if !m.DataClasses.IsNull() && !m.DataClasses.IsUnknown() {
 		diags.Append(m.DataClasses.ElementsAs(ctx, &req.DataClasses, false)...)
 	}
@@ -144,9 +205,10 @@ func connectorRequestFromFacet(ctx context.Context, m *connectorFacet, kind stri
 }
 
 // mergeConnectorRequest builds v1's full-body update: the connector's current
-// state, with the plan's managed values written over it. Fields the plan does
-// not name keep their server-side values.
-func mergeConnectorRequest(ctx context.Context, m *connectorFacet, current *client.Connector, kind string, diags *diag.Diagnostics) *client.ConnectorRequest {
+// state, with the plan's managed values and the write-only values to send
+// written over it. Fields the plan does not name keep their server-side
+// values.
+func mergeConnectorRequest(ctx context.Context, m *connectorFacet, current *client.Connector, kind string, writeOnly map[string]string, diags *diag.Diagnostics) *client.ConnectorRequest {
 	req := &client.ConnectorRequest{
 		Name:        m.Name.ValueString(),
 		Type:        kind,
@@ -188,6 +250,9 @@ func mergeConnectorRequest(ctx context.Context, m *connectorFacet, current *clie
 		req.Fields[k] = client.Field{Value: v}
 	}
 	writeSecretFields(ctx, req.Fields, *m.SecretFields, diags)
+	for k, v := range writeOnly {
+		req.Fields[k] = client.Field{Value: v}
+	}
 	return req
 }
 
@@ -196,8 +261,13 @@ func mergeConnectorRequest(ctx context.Context, m *connectorFacet, current *clie
 // server-side map is not our contract. Attributes that are null in state stay
 // null when the server reports an empty value, so optional attributes do not
 // oscillate between null and "".
-func refreshFacetFromConnector(ctx context.Context, m *connectorFacet, conn *client.Connector, diags *diag.Diagnostics) {
+//
+// sensitive is only read on the import path, and comes from
+// sensitiveFieldNames.
+func refreshFacetFromConnector(ctx context.Context, m *connectorFacet, conn *client.Connector, sensitive map[string]bool, diags *diag.Diagnostics) {
 	*m.Name = types.StringValue(conn.Name)
+	// Write-only values are never read back: the server holds them in clear.
+	*m.FieldsWO = types.MapNull(types.StringType)
 	*m.Protocol = types.StringValue(conn.Protocol)
 	if conn.Integration.Name != "" {
 		*m.Integration = types.StringValue(conn.Integration.Name)
@@ -233,16 +303,19 @@ func refreshFacetFromConnector(ctx context.Context, m *connectorFacet, conn *cli
 	}
 
 	if m.Fields.IsNull() || m.Fields.IsUnknown() {
-		// Import path: adopt the full server-side map, each field in the form
-		// the server holds it. A reference adopted as a plain value would go
-		// back out without its provider on the next update, and v1 would
-		// silently turn the path into the field's value.
+		// Import path: adopt the server-side map, each field in the form the
+		// server holds it. A reference adopted as a plain value would go back
+		// out without its provider on the next update, and v1 would silently
+		// turn the path into the field's value. A plain value the integration
+		// marks sensitive is not adopted at all: it may be one the
+		// configuration passes write-only, and it stays server-side, kept by
+		// the update's merge.
 		all := map[string]string{}
 		refs := map[string]secretFieldModel{}
 		for k, f := range conn.Fields {
 			if f.Provider != nil {
 				refs[k] = secretFieldModel{Provider: types.StringValue(f.Provider.ID), Path: types.StringValue(f.Value)}
-			} else {
+			} else if s, known := sensitive[k]; known && !s {
 				all[k] = f.Value
 			}
 		}
@@ -293,6 +366,26 @@ func refreshFacetFromConnector(ctx context.Context, m *connectorFacet, conn *cli
 	rv, d := types.MapValueFrom(ctx, types.ObjectType{AttrTypes: secretFieldAttrTypes}, refs)
 	diags.Append(d...)
 	*m.SecretFields = rv
+}
+
+// sensitiveFieldNames maps each key the connector's integration declares for
+// its kind of use to whether it is sensitive. A key missing from the map is
+// one the integration does not describe.
+func sensitiveFieldNames(c *client.Client, conn *client.Connector) (map[string]bool, error) {
+	protocols, err := c.IntegrationProtocols(conn.Integration.ID, conn.Type)
+	if err != nil {
+		return nil, err
+	}
+	names := map[string]bool{}
+	for _, p := range protocols {
+		if p.Scheme != conn.Protocol {
+			continue
+		}
+		for _, f := range p.Fields {
+			names[f.Name] = f.Sensitive
+		}
+	}
+	return names, nil
 }
 
 func stringOrNull(server string, prior types.String) types.String {

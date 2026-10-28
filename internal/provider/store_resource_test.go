@@ -10,6 +10,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
+	"github.com/hashicorp/terraform-plugin-testing/config"
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
@@ -253,6 +254,141 @@ resource "plakar_store" "lab" {
 						}
 					}
 					return testAccCheckImportHoldsNone(testAccCanaries()...)(states)
+				},
+			},
+		},
+	})
+}
+
+// A store whose passphrase is write-only: sent at creation, which the
+// storage's initialization proves, and never in state or a plan. The steps
+// then walk what write-only means for an update: another field changes and
+// the passphrase stays; a key leaves fields_wo and keeps its server value; a
+// key moves between plain, write-only and reference in every direction that
+// involves write-only, without a version bump; a bumped version rotates a
+// value; a new value without a bump plans nothing.
+func TestAccStore_writeOnlyFields(t *testing.T) {
+	suffix := acctest.RandString(8)
+	passphrase := "plakar-acc-" + acctest.RandString(24)
+	vaultPath := os.Getenv("PLAKAR_ACC_VAULT_PATH")
+	ref := func(key string) string { return vaultPath + "#" + key }
+	hcl := func(fields, writeOnly, secretFields string, version int) string {
+		return testAccSecretFieldsBase(suffix) + fmt.Sprintf(`
+variable "passphrase" {
+  type      = string
+  sensitive = true
+  ephemeral = true
+}
+
+resource "plakar_store" "lab" {
+  name        = "TF acceptance store wo %s"
+  integration = "s3"
+  resource    = plakar_inventory_resource.bucket.urn
+  fields = {
+    root = "/tf-acc-wo-%s"
+    %s
+  }
+  fields_wo = {
+    passphrase = var.passphrase
+    %s
+  }
+  fields_wo_version = %d
+  secret_fields = {
+    access_key        = { provider = plakar_secret_provider.vault.id, path = %q }
+    secret_access_key = { provider = plakar_secret_provider.vault.id, path = %q }
+    %s
+  }
+}
+`, suffix, suffix, fields, writeOnly, version, ref("access_key"), ref("secret_access_key"), secretFields)
+	}
+	variables := testAccSecretFieldsVariables()
+	variables["passphrase"] = config.StringVariable(passphrase)
+	canaries := append(testAccCanaries(), passphrase)
+	noSecret := []statecheck.StateCheck{expectNoValueInState(canaries...)}
+	update := resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+		plancheck.ExpectResourceAction("plakar_store.lab", plancheck.ResourceActionUpdate),
+		expectNoValueInPlan(canaries...),
+	}}
+	step := func(cfg string, checks ...resource.TestCheckFunc) resource.TestStep {
+		return resource.TestStep{
+			Config: cfg, ConfigVariables: variables, ConfigPlanChecks: update, ConfigStateChecks: noSecret,
+			Check: resource.ComposeAggregateTestCheckFunc(append(checks,
+				testAccCheckConnectorFieldValue("plakar_store.lab", "passphrase", passphrase))...),
+		}
+	}
+	regionRef := fmt.Sprintf(`region = { provider = plakar_secret_provider.vault.id, path = %q }`, ref("region"))
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccSecretFieldsPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		TerraformVersionChecks: []tfversion.TerraformVersionCheck{
+			tfversion.SkipBelow(tfversion.Version1_11_0),
+		},
+		Steps: []resource.TestStep{
+			{
+				Config:          hcl(`storage_class = "STANDARD"`, `region = "fr-par"`, "", 1),
+				ConfigVariables: variables,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{expectNoValueInPlan(canaries...)},
+				},
+				ConfigStateChecks: noSecret,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckNoResourceAttr("plakar_store.lab", "fields_wo"),
+					resource.TestCheckNoResourceAttr("plakar_store.lab", "fields.passphrase"),
+					testAccCheckConnectorFieldValue("plakar_store.lab", "passphrase", passphrase),
+					testAccCheckConnectorFieldValue("plakar_store.lab", "region", "fr-par"),
+				),
+			},
+			{
+				Config:          hcl(`storage_class = "STANDARD"`, `region = "fr-par"`, "", 1),
+				ConfigVariables: variables,
+				PlanOnly:        true,
+			},
+			// Another field changes: the passphrase is not in the plan, and
+			// stays what it was on the server.
+			step(hcl(`storage_class = "STANDARD_IA"`, `region = "fr-par"`, "", 1),
+				testAccCheckConnectorFieldValue("plakar_store.lab", "storage_class", "STANDARD_IA")),
+			// A key removed from fields_wo keeps its server-side value.
+			step(hcl(`storage_class = "STANDARD"`, "", "", 1),
+				testAccCheckConnectorFieldValue("plakar_store.lab", "region", "fr-par")),
+			// Plain to write-only, no version bump: the moved key is sent.
+			step(hcl("", `storage_class = "STANDARD_IA"`, "", 1),
+				testAccCheckConnectorFieldValue("plakar_store.lab", "storage_class", "STANDARD_IA")),
+			// Write-only to plain.
+			step(hcl(`storage_class = "STANDARD"`, "", "", 1),
+				testAccCheckConnectorFieldValue("plakar_store.lab", "storage_class", "STANDARD")),
+			// The documented rotation: a new value and a bumped version.
+			step(hcl(`storage_class = "STANDARD"`, `region = "nl-ams"`, "", 2),
+				testAccCheckConnectorFieldValue("plakar_store.lab", "region", "nl-ams")),
+			// Write-only to reference, then reference to write-only, again
+			// without a version bump.
+			step(hcl(`storage_class = "STANDARD"`, "", regionRef, 2),
+				testAccCheckConnectorField("plakar_store.lab", "region", "plakar_secret_provider.vault", ref("region"))),
+			step(hcl(`storage_class = "STANDARD"`, `region = "fr-par"`, "", 2),
+				testAccCheckConnectorFieldValue("plakar_store.lab", "region", "fr-par")),
+			// A new write-only value without a bump plans nothing: Terraform
+			// cannot see it, and the documentation says so.
+			{
+				Config:          hcl(`storage_class = "STANDARD"`, `region = "pl-waw"`, "", 2),
+				ConfigVariables: variables,
+				PlanOnly:        true,
+			},
+			// Import cannot recover write-only values, and must not adopt the
+			// passphrase as a plain value either: it is sensitive.
+			{
+				ResourceName:      "plakar_store.lab",
+				ConfigVariables:   variables,
+				ImportState:       true,
+				ImportStateVerify: true,
+				ImportStateVerifyIgnore: []string{"resource", "initialize", "compression", "fields",
+					"fields_wo", "fields_wo_version"},
+				ImportStateCheck: func(states []*terraform.InstanceState) error {
+					for _, is := range states {
+						if _, ok := is.Attributes["fields.passphrase"]; ok && is.Ephemeral.Type == "plakar_store" {
+							return fmt.Errorf("import adopted the passphrase as a plain value")
+						}
+					}
+					return testAccCheckImportHoldsNone(canaries...)(states)
 				},
 			},
 		},
