@@ -80,3 +80,80 @@ func TestValidatePassphrase(t *testing.T) {
 		})
 	}
 }
+
+var _ resource.ResourceWithValidateConfig = &connectorResource{}
+
+func secretFieldsMap(t *testing.T, refs map[string][2]string) types.Map {
+	t.Helper()
+	elems := map[string]attr.Value{}
+	for k, r := range refs {
+		elems[k] = types.ObjectValueMust(secretFieldAttrTypes, map[string]attr.Value{
+			"provider": types.StringValue(r[0]),
+			"path":     types.StringValue(r[1]),
+		})
+	}
+	return types.MapValueMust(types.ObjectType{AttrTypes: secretFieldAttrTypes}, elems)
+}
+
+// A passphrase resolved from a secret provider satisfies both halves of the
+// check: its value only exists on the server, at run time.
+func TestCheckConfiguredPassphrase_secretFields(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		fields       types.Map
+		secretFields types.Map
+		wantErr      bool
+	}{
+		{"passphrase as a reference", fieldsMap(t, map[string]string{"root": "/x"}),
+			secretFieldsMap(t, map[string][2]string{"passphrase": {"sp", "secret/x#passphrase"}}), false},
+		{"other references only", fieldsMap(t, map[string]string{"root": "/x"}),
+			secretFieldsMap(t, map[string][2]string{"access_key": {"sp", "secret/x#ak"}}), true},
+		{"unknown references defer to apply", fieldsMap(t, map[string]string{"root": "/x"}),
+			types.MapUnknown(types.ObjectType{AttrTypes: secretFieldAttrTypes}), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			diags := checkConfiguredPassphrase(&storeModel{Fields: tc.fields, SecretFields: tc.secretFields, Initialize: types.BoolValue(true)})
+			if got := diags.HasError(); got != tc.wantErr {
+				t.Fatalf("HasError() = %v, want %v (%v)", got, tc.wantErr, diags)
+			}
+			var applied diag.Diagnostics
+			plan := storeModel{Fields: tc.fields, SecretFields: tc.secretFields}
+			validatePassphrase(context.Background(), &plan, &applied)
+			if got := applied.HasError(); got != tc.wantErr {
+				t.Fatalf("apply-time HasError() = %v, want %v (%v)", got, tc.wantErr, applied)
+			}
+		})
+	}
+}
+
+func TestCheckSecretFields(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		refs    types.Map
+		wantErr bool
+	}{
+		{"complete", secretFieldsMap(t, map[string][2]string{"passphrase": {"sp", "secret/x#passphrase"}}), false},
+		{"empty path", secretFieldsMap(t, map[string][2]string{"passphrase": {"sp", ""}}), true},
+		{"blank path", secretFieldsMap(t, map[string][2]string{"passphrase": {"sp", "  "}}), true},
+		{"empty provider", secretFieldsMap(t, map[string][2]string{"passphrase": {"", "secret/x#passphrase"}}), true},
+		{"null", types.MapNull(types.ObjectType{AttrTypes: secretFieldAttrTypes}), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := checkSecretFields(tc.refs).HasError(); got != tc.wantErr {
+				t.Fatalf("HasError() = %v, want %v", got, tc.wantErr)
+			}
+		})
+	}
+}
+
+// One key in fields and in secret_fields: the two would race for the same
+// server-side field, so it is refused at plan time.
+func TestCheckFieldForms_secretFields(t *testing.T) {
+	diags := checkFieldForms(
+		fieldForm{"fields", fieldsMap(t, map[string]string{"passphrase": "x"})},
+		fieldForm{"secret_fields", secretFieldsMap(t, map[string][2]string{"passphrase": {"sp", "secret/x#p"}})},
+	)
+	if !diags.HasError() {
+		t.Fatal("a key set in both fields and secret_fields was accepted")
+	}
+}

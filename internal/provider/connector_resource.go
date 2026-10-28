@@ -26,24 +26,26 @@ type connectorResource struct {
 }
 
 type connectorModel struct {
-	ID          types.String `tfsdk:"id"`
-	Name        types.String `tfsdk:"name"`
-	Type        types.String `tfsdk:"type"`
-	Integration types.String `tfsdk:"integration"`
-	Protocol    types.String `tfsdk:"protocol"`
-	Resource    types.String `tfsdk:"resource"`
-	URNID       types.String `tfsdk:"urn_id"`
-	Fields      types.Map    `tfsdk:"fields"`
-	Environment types.String `tfsdk:"environment"`
-	DataClasses types.List   `tfsdk:"data_classes"`
-	Temperature types.String `tfsdk:"temperature"`
+	ID           types.String `tfsdk:"id"`
+	Name         types.String `tfsdk:"name"`
+	Type         types.String `tfsdk:"type"`
+	Integration  types.String `tfsdk:"integration"`
+	Protocol     types.String `tfsdk:"protocol"`
+	Resource     types.String `tfsdk:"resource"`
+	URNID        types.String `tfsdk:"urn_id"`
+	Fields       types.Map    `tfsdk:"fields"`
+	SecretFields types.Map    `tfsdk:"secret_fields"`
+	Environment  types.String `tfsdk:"environment"`
+	DataClasses  types.List   `tfsdk:"data_classes"`
+	Temperature  types.String `tfsdk:"temperature"`
 }
 
 func (m *connectorModel) facet() *connectorFacet {
 	return &connectorFacet{
 		Name: &m.Name, Integration: &m.Integration, Protocol: &m.Protocol,
 		Resource: &m.Resource, URNID: &m.URNID, Fields: &m.Fields,
-		Environment: &m.Environment, DataClasses: &m.DataClasses,
+		SecretFields: &m.SecretFields,
+		Environment:  &m.Environment, DataClasses: &m.DataClasses,
 		Temperature: &m.Temperature,
 	}
 }
@@ -114,6 +116,7 @@ func (r *connectorResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 					"declared here are managed; anything else set server-side keeps " +
 					"its value.",
 			},
+			"secret_fields": secretFieldsAttribute(),
 			"environment": schema.StringAttribute{
 				Optional:    true,
 				Description: "Environment label, e.g. production.",
@@ -146,6 +149,21 @@ func (r *connectorResource) Configure(_ context.Context, req resource.ConfigureR
 		return
 	}
 	r.client = c
+}
+
+// ValidateConfig refuses a field set both as a value and as a reference, and a
+// reference with nothing to resolve.
+func (r *connectorResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var config connectorModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(checkFieldForms(
+		fieldForm{"fields", config.Fields},
+		fieldForm{"secret_fields", config.SecretFields},
+	)...)
+	resp.Diagnostics.Append(checkSecretFields(config.SecretFields)...)
 }
 
 func (r *connectorResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {

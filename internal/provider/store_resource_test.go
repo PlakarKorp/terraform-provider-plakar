@@ -10,8 +10,12 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
+	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
+	"github.com/hashicorp/terraform-plugin-testing/statecheck"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/tfversion"
 )
 
 var testAccProtoV6ProviderFactories = map[string]func() (tfprotov6.ProviderServer, error){
@@ -90,6 +94,166 @@ resource "plakar_store" "lab" {
 				// map, which import adopts in full while the config declares
 				// a subset.
 				ImportStateVerifyIgnore: []string{"resource", "initialize", "compression", "fields"},
+			},
+		},
+	})
+}
+
+// A store whose passphrase and S3 keys are resolved from Vault. Creating it
+// initializes the storage, which only works if Plakar resolved all three, so
+// the first step alone proves the references reach the server intact; every
+// later step searches state and plan for the secret values behind them. The
+// last steps move fields between forms behind Terraform's back and in the
+// configuration, and import the store back.
+func TestAccStore_secretFields(t *testing.T) {
+	suffix := acctest.RandString(8)
+	storeName := "TF acceptance store " + suffix
+	spName := "TF acceptance vault " + suffix
+	vaultPath := os.Getenv("PLAKAR_ACC_VAULT_PATH")
+	ref := func(key string) string { return vaultPath + "#" + key }
+	config := func(accessKeyPath, extraFields, extraSecretFields string) string {
+		return testAccSecretFieldsBase(suffix) + fmt.Sprintf(`
+resource "plakar_store" "lab" {
+  name        = %q
+  integration = "s3"
+  resource    = plakar_inventory_resource.bucket.urn
+  fields = {
+    root = "/tf-acc-%s"
+    %s
+  }
+  secret_fields = {
+    passphrase        = { provider = plakar_secret_provider.vault.id, path = %q }
+    access_key        = { provider = plakar_secret_provider.vault.id, path = %q }
+    secret_access_key = { provider = plakar_secret_provider.vault.id, path = %q }
+    %s
+  }
+}
+`, storeName, suffix, extraFields, ref("passphrase"), accessKeyPath, ref("secret_access_key"), extraSecretFields)
+	}
+	base := config(ref("access_key"), `storage_class = "STANDARD"`, "")
+	noSecret := []statecheck.StateCheck{expectNoValueInState(testAccCanaries()...)}
+	update := func(extra ...plancheck.PlanCheck) resource.ConfigPlanChecks {
+		return resource.ConfigPlanChecks{PreApply: append([]plancheck.PlanCheck{
+			plancheck.ExpectResourceAction("plakar_store.lab", plancheck.ResourceActionUpdate),
+			expectNoValueInPlan(testAccCanaries()...),
+		}, extra...)}
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccSecretFieldsPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		TerraformVersionChecks: []tfversion.TerraformVersionCheck{
+			tfversion.SkipBelow(tfversion.Version1_11_0),
+		},
+		Steps: []resource.TestStep{
+			{
+				Config:          base,
+				ConfigVariables: testAccSecretFieldsVariables(),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{expectNoValueInPlan(testAccCanaries()...)},
+				},
+				ConfigStateChecks: noSecret,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("plakar_store.lab", "secret_fields.passphrase.path", ref("passphrase")),
+					resource.TestCheckResourceAttrPair("plakar_store.lab", "secret_fields.passphrase.provider",
+						"plakar_secret_provider.vault", "id"),
+					resource.TestCheckNoResourceAttr("plakar_store.lab", "fields.passphrase"),
+					testAccCheckConnectorField("plakar_store.lab", "passphrase", "plakar_secret_provider.vault", ref("passphrase")),
+					testAccCheckConnectorField("plakar_store.lab", "secret_access_key", "plakar_secret_provider.vault", ref("secret_access_key")),
+					testAccCheckConnectorField("plakar_store.lab", "storage_class", "", ""),
+				),
+			},
+			{
+				Config:          base,
+				ConfigVariables: testAccSecretFieldsVariables(),
+				PlanOnly:        true,
+			},
+			// A new path is an in-place update, never a replace.
+			{
+				Config:            config(ref("access_key_moved"), `storage_class = "STANDARD"`, ""),
+				ConfigVariables:   testAccSecretFieldsVariables(),
+				ConfigPlanChecks:  update(),
+				ConfigStateChecks: noSecret,
+				Check:             testAccCheckConnectorField("plakar_store.lab", "access_key", "plakar_secret_provider.vault", ref("access_key_moved")),
+			},
+			// A plain field turned into a reference, then back.
+			{
+				Config: config(ref("access_key"), "",
+					fmt.Sprintf(`storage_class = { provider = plakar_secret_provider.vault.id, path = %q }`, ref("storage_class"))),
+				ConfigVariables:   testAccSecretFieldsVariables(),
+				ConfigPlanChecks:  update(),
+				ConfigStateChecks: noSecret,
+				Check:             testAccCheckConnectorField("plakar_store.lab", "storage_class", "plakar_secret_provider.vault", ref("storage_class")),
+			},
+			{
+				Config:            base,
+				ConfigVariables:   testAccSecretFieldsVariables(),
+				ConfigPlanChecks:  update(),
+				ConfigStateChecks: noSecret,
+				Check:             testAccCheckConnectorField("plakar_store.lab", "storage_class", "", ""),
+			},
+			// Someone turns a plain field into a reference in the UI: the plan
+			// shows it rather than an empty diff, and applying restores it.
+			{
+				PreConfig:          testAccSetConnectorField(t, "store", storeName, "storage_class", ref("storage_class"), spName),
+				Config:             base,
+				ConfigVariables:    testAccSecretFieldsVariables(),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+			{
+				Config:          base,
+				ConfigVariables: testAccSecretFieldsVariables(),
+				Check:           testAccCheckConnectorField("plakar_store.lab", "storage_class", "", ""),
+			},
+			// And the other way round: a reference turned into a plain value.
+			{
+				PreConfig:          testAccSetConnectorField(t, "store", storeName, "access_key", "AKIA-NOT-A-REFERENCE", ""),
+				Config:             base,
+				ConfigVariables:    testAccSecretFieldsVariables(),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+			{
+				Config:            base,
+				ConfigVariables:   testAccSecretFieldsVariables(),
+				ConfigStateChecks: noSecret,
+				Check:             testAccCheckConnectorField("plakar_store.lab", "access_key", "plakar_secret_provider.vault", ref("access_key")),
+			},
+			// A reference set outside Terraform on a key the configuration
+			// does not declare survives an update of another field.
+			{
+				PreConfig:         testAccSetConnectorField(t, "store", storeName, "region", ref("region"), spName),
+				Config:            config(ref("access_key"), `storage_class = "STANDARD_IA"`, ""),
+				ConfigVariables:   testAccSecretFieldsVariables(),
+				ConfigPlanChecks:  update(),
+				ConfigStateChecks: noSecret,
+				Check:             testAccCheckConnectorField("plakar_store.lab", "region", "plakar_secret_provider.vault", ref("region")),
+			},
+			// Import rebuilds every reference as a reference, never as a plain
+			// value; the undeclared one included, since import adopts the map.
+			{
+				ResourceName:            "plakar_store.lab",
+				ConfigVariables:         testAccSecretFieldsVariables(),
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"resource", "initialize", "compression", "fields", "secret_fields.%", "secret_fields.region"},
+				ImportStateCheck: func(states []*terraform.InstanceState) error {
+					for _, is := range states {
+						if is.Ephemeral.Type != "plakar_store" {
+							continue
+						}
+						for _, key := range []string{"passphrase", "access_key", "secret_access_key", "region"} {
+							if _, ok := is.Attributes["fields."+key]; ok {
+								return fmt.Errorf("import adopted %s as a plain value", key)
+							}
+							if is.Attributes["secret_fields."+key+".path"] == "" {
+								return fmt.Errorf("import did not adopt %s as a reference", key)
+							}
+						}
+					}
+					return testAccCheckImportHoldsNone(testAccCanaries()...)(states)
+				},
 			},
 		},
 	})

@@ -28,18 +28,19 @@ type storeResource struct {
 }
 
 type storeModel struct {
-	ID          types.String `tfsdk:"id"`
-	Name        types.String `tfsdk:"name"`
-	Integration types.String `tfsdk:"integration"`
-	Protocol    types.String `tfsdk:"protocol"`
-	Resource    types.String `tfsdk:"resource"`
-	URNID       types.String `tfsdk:"urn_id"`
-	Fields      types.Map    `tfsdk:"fields"`
-	Environment types.String `tfsdk:"environment"`
-	DataClasses types.List   `tfsdk:"data_classes"`
-	Temperature types.String `tfsdk:"temperature"`
-	Initialize  types.Bool   `tfsdk:"initialize"`
-	Compression types.String `tfsdk:"compression"`
+	ID           types.String `tfsdk:"id"`
+	Name         types.String `tfsdk:"name"`
+	Integration  types.String `tfsdk:"integration"`
+	Protocol     types.String `tfsdk:"protocol"`
+	Resource     types.String `tfsdk:"resource"`
+	URNID        types.String `tfsdk:"urn_id"`
+	Fields       types.Map    `tfsdk:"fields"`
+	SecretFields types.Map    `tfsdk:"secret_fields"`
+	Environment  types.String `tfsdk:"environment"`
+	DataClasses  types.List   `tfsdk:"data_classes"`
+	Temperature  types.String `tfsdk:"temperature"`
+	Initialize   types.Bool   `tfsdk:"initialize"`
+	Compression  types.String `tfsdk:"compression"`
 }
 
 func NewStoreResource() resource.Resource {
@@ -101,6 +102,7 @@ func (r *storeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 					"encrypts the store at rest. Only the keys declared here are " +
 					"managed; anything else set server-side keeps its value.",
 			},
+			"secret_fields": secretFieldsAttribute(),
 			"environment": schema.StringAttribute{
 				Optional:    true,
 				Description: "Environment label, e.g. production.",
@@ -165,6 +167,11 @@ func (r *storeResource) ValidateConfig(ctx context.Context, req resource.Validat
 		return
 	}
 	resp.Diagnostics.Append(checkConfiguredPassphrase(&config)...)
+	resp.Diagnostics.Append(checkFieldForms(
+		fieldForm{"fields", config.Fields},
+		fieldForm{"secret_fields", config.SecretFields},
+	)...)
+	resp.Diagnostics.Append(checkSecretFields(config.SecretFields)...)
 }
 
 // checkConfiguredPassphrase is the plan-time half of the check: everything that
@@ -174,6 +181,11 @@ func checkConfiguredPassphrase(config *storeModel) diag.Diagnostics {
 	// initialize defaults to true, so only an explicit false opts out; a store
 	// that is not initialized here has its passphrase set wherever it was.
 	if !config.Initialize.IsNull() && !config.Initialize.IsUnknown() && !config.Initialize.ValueBool() {
+		return diags
+	}
+	// A passphrase resolved from a secret provider is only a value at run
+	// time, on the server; checkSecretFields holds its path to non-empty.
+	if passphraseIsSecretField(config.SecretFields) {
 		return diags
 	}
 	// A map whose keys are not known yet says nothing about the passphrase.
@@ -201,6 +213,19 @@ func checkConfiguredPassphrase(config *storeModel) diag.Diagnostics {
 	return diags
 }
 
+// passphraseIsSecretField reports a passphrase declared in secret_fields. An
+// unknown map may hold one, and defers to apply like an unknown fields map.
+func passphraseIsSecretField(m types.Map) bool {
+	if m.IsUnknown() {
+		return true
+	}
+	if m.IsNull() {
+		return false
+	}
+	_, ok := m.Elements()["passphrase"]
+	return ok
+}
+
 // missingPassphrase and emptyPassphrase keep the wording identical between the
 // plan-time check and the apply-time one that catches computed values.
 func missingPassphrase() diag.Diagnostic {
@@ -222,6 +247,9 @@ func emptyPassphrase() diag.Diagnostic {
 // skip: a passphrase that was unknown during validation, because it comes from
 // a variable or another resource, and lands empty once resolved.
 func validatePassphrase(ctx context.Context, plan *storeModel, diags *diag.Diagnostics) {
+	if passphraseIsSecretField(plan.SecretFields) {
+		return
+	}
 	fields := map[string]string{}
 	diags.Append(plan.Fields.ElementsAs(ctx, &fields, false)...)
 	if diags.HasError() {

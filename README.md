@@ -172,6 +172,9 @@ The provider authenticates with an API key belonging to a service account
 (`pcp_ak_...`). The key is bound to one organization; `organization_id`
 re-scopes when the account is a member of another. Connector fields are
 sensitive and land in Terraform state — treat state accordingly.
+To keep a secret out of both Plakar and state, put it in a
+`plakar_secret_provider` and point at it from `secret_fields`: only the path
+is stored, and Plakar resolves the value each time it needs it.
 
 Destroying a `plakar_store` removes the store from Plakar; data in the
 underlying storage is not touched.

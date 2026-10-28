@@ -5,8 +5,13 @@ package provider
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/PlakarKorp/terraform-provider-plakar/internal/client"
@@ -15,23 +20,102 @@ import (
 // connectorFacet is the connector-shaped slice both the store and connector
 // models expose, so the request-building and refresh logic exists once.
 type connectorFacet struct {
-	Name        *types.String
-	Integration *types.String
-	Protocol    *types.String
-	Resource    *types.String
-	URNID       *types.String
-	Fields      *types.Map
-	Environment *types.String
-	DataClasses *types.List
-	Temperature *types.String
+	Name         *types.String
+	Integration  *types.String
+	Protocol     *types.String
+	Resource     *types.String
+	URNID        *types.String
+	Fields       *types.Map
+	SecretFields *types.Map
+	Environment  *types.String
+	DataClasses  *types.List
+	Temperature  *types.String
 }
 
 func (m *storeModel) facet() *connectorFacet {
 	return &connectorFacet{
 		Name: &m.Name, Integration: &m.Integration, Protocol: &m.Protocol,
 		Resource: &m.Resource, URNID: &m.URNID, Fields: &m.Fields,
-		Environment: &m.Environment, DataClasses: &m.DataClasses,
+		SecretFields: &m.SecretFields,
+		Environment:  &m.Environment, DataClasses: &m.DataClasses,
 		Temperature: &m.Temperature,
+	}
+}
+
+// secretFieldModel is one field resolved from a secret provider at run time:
+// where the secret lives, never its value.
+type secretFieldModel struct {
+	Provider types.String `tfsdk:"provider"`
+	Path     types.String `tfsdk:"path"`
+}
+
+var secretFieldAttrTypes = map[string]attr.Type{
+	"provider": types.StringType,
+	"path":     types.StringType,
+}
+
+// secretFieldsAttribute is the secret_fields schema the store and connector
+// share. Nothing in it is a secret, so it is not marked sensitive: a plan
+// shows which path each field points to.
+func secretFieldsAttribute() schema.MapNestedAttribute {
+	return schema.MapNestedAttribute{
+		Optional: true,
+		Description: "Fields resolved from a secret provider each time Plakar " +
+			"needs them, instead of being stored: Plakar and Terraform state " +
+			"only hold the path. Keyed like fields; a key may not appear in both.",
+		NestedObject: schema.NestedAttributeObject{
+			Attributes: map[string]schema.Attribute{
+				"provider": schema.StringAttribute{
+					Required:    true,
+					Description: "Id of the plakar_secret_provider holding the secret.",
+				},
+				"path": schema.StringAttribute{
+					Required: true,
+					Description: "Where the secret lives in the provider. For Vault: " +
+						"{secret_engine}/{path}#{field}, e.g. secret/prod/s3#secret_key.",
+				},
+			},
+		},
+	}
+}
+
+// checkSecretFields refuses a reference with an empty path or provider: the
+// server would take it, and fail only when a task needs the secret.
+func checkSecretFields(m types.Map) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if m.IsNull() || m.IsUnknown() {
+		return diags
+	}
+	for k, v := range m.Elements() {
+		obj, ok := v.(types.Object)
+		if !ok || obj.IsNull() || obj.IsUnknown() {
+			continue
+		}
+		for _, name := range []string{"provider", "path"} {
+			s, ok := obj.Attributes()[name].(types.String)
+			if ok && !s.IsUnknown() && !s.IsNull() && strings.TrimSpace(s.ValueString()) == "" {
+				diags.AddAttributeError(path.Root("secret_fields").AtMapKey(k).AtName(name),
+					"empty secret field "+name,
+					fmt.Sprintf("secret_fields.%s needs a non-empty %s.", k, name))
+			}
+		}
+	}
+	return diags
+}
+
+// writeSecretFields adds the declared references to a request's field map.
+func writeSecretFields(ctx context.Context, into map[string]client.Field, m types.Map, diags *diag.Diagnostics) {
+	if m.IsNull() || m.IsUnknown() {
+		return
+	}
+	refs := map[string]secretFieldModel{}
+	diags.Append(m.ElementsAs(ctx, &refs, false)...)
+	for k, ref := range refs {
+		f := client.Field{Value: ref.Path.ValueString()}
+		f.Provider = &struct {
+			ID string `json:"id"`
+		}{ID: ref.Provider.ValueString()}
+		into[k] = f
 	}
 }
 
@@ -52,6 +136,7 @@ func connectorRequestFromFacet(ctx context.Context, m *connectorFacet, kind stri
 	for k, v := range fields {
 		req.Fields[k] = client.Field{Value: v}
 	}
+	writeSecretFields(ctx, req.Fields, *m.SecretFields, diags)
 	if !m.DataClasses.IsNull() && !m.DataClasses.IsUnknown() {
 		diags.Append(m.DataClasses.ElementsAs(ctx, &req.DataClasses, false)...)
 	}
@@ -102,6 +187,7 @@ func mergeConnectorRequest(ctx context.Context, m *connectorFacet, current *clie
 	for k, v := range fields {
 		req.Fields[k] = client.Field{Value: v}
 	}
+	writeSecretFields(ctx, req.Fields, *m.SecretFields, diags)
 	return req
 }
 
@@ -147,16 +233,33 @@ func refreshFacetFromConnector(ctx context.Context, m *connectorFacet, conn *cli
 	}
 
 	if m.Fields.IsNull() || m.Fields.IsUnknown() {
-		// Import path: adopt the full server-side map.
+		// Import path: adopt the full server-side map, each field in the form
+		// the server holds it. A reference adopted as a plain value would go
+		// back out without its provider on the next update, and v1 would
+		// silently turn the path into the field's value.
 		all := map[string]string{}
+		refs := map[string]secretFieldModel{}
 		for k, f := range conn.Fields {
-			all[k] = f.Value
+			if f.Provider != nil {
+				refs[k] = secretFieldModel{Provider: types.StringValue(f.Provider.ID), Path: types.StringValue(f.Value)}
+			} else {
+				all[k] = f.Value
+			}
 		}
 		mv, d := types.MapValueFrom(ctx, types.StringType, all)
 		diags.Append(d...)
 		*m.Fields = mv
+		*m.SecretFields = types.MapNull(types.ObjectType{AttrTypes: secretFieldAttrTypes})
+		if len(refs) > 0 {
+			rv, d := types.MapValueFrom(ctx, types.ObjectType{AttrTypes: secretFieldAttrTypes}, refs)
+			diags.Append(d...)
+			*m.SecretFields = rv
+		}
 		return
 	}
+	// A declared plain field the server holds as a reference refreshes to its
+	// path, which differs from the configured value, so the plan shows the
+	// field instead of the next update erasing the reference unseen.
 	declared := map[string]string{}
 	diags.Append(m.Fields.ElementsAs(ctx, &declared, false)...)
 	for k := range declared {
@@ -167,6 +270,29 @@ func refreshFacetFromConnector(ctx context.Context, m *connectorFacet, conn *cli
 	mv, d := types.MapValueFrom(ctx, types.StringType, declared)
 	diags.Append(d...)
 	*m.Fields = mv
+
+	if m.SecretFields.IsNull() || m.SecretFields.IsUnknown() {
+		return
+	}
+	// A declared reference the server holds as a plain value refreshes to an
+	// empty one rather than to that value, which is the secret itself; one the
+	// server no longer has drops out. Either way the plan puts it back.
+	refs := map[string]secretFieldModel{}
+	diags.Append(m.SecretFields.ElementsAs(ctx, &refs, false)...)
+	for k := range refs {
+		f, ok := conn.Fields[k]
+		switch {
+		case !ok:
+			delete(refs, k)
+		case f.Provider == nil:
+			refs[k] = secretFieldModel{Provider: types.StringValue(""), Path: types.StringValue("")}
+		default:
+			refs[k] = secretFieldModel{Provider: types.StringValue(f.Provider.ID), Path: types.StringValue(f.Value)}
+		}
+	}
+	rv, d := types.MapValueFrom(ctx, types.ObjectType{AttrTypes: secretFieldAttrTypes}, refs)
+	diags.Append(d...)
+	*m.SecretFields = rv
 }
 
 func stringOrNull(server string, prior types.String) types.String {
