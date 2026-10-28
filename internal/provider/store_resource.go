@@ -460,4 +460,8 @@ func (r *storeResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 
 func (r *storeResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	// initialize only acts at creation and the API keeps no trace of it, so
+	// an imported store takes the default; left null, the first plan after
+	// an import would report it as a change.
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("initialize"), true)...)
 }

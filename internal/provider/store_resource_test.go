@@ -238,7 +238,7 @@ resource "plakar_store" "lab" {
 				ConfigVariables:         testAccSecretFieldsVariables(),
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"resource", "initialize", "compression", "fields", "secret_fields.%", "secret_fields.region"},
+				ImportStateVerifyIgnore: []string{"resource", "compression", "fields", "secret_fields.%", "secret_fields.region"},
 				ImportStateCheck: func(states []*terraform.InstanceState) error {
 					for _, is := range states {
 						if is.Ephemeral.Type != "plakar_store" {
@@ -380,7 +380,7 @@ resource "plakar_store" "lab" {
 				ConfigVariables:   variables,
 				ImportState:       true,
 				ImportStateVerify: true,
-				ImportStateVerifyIgnore: []string{"resource", "initialize", "compression", "fields",
+				ImportStateVerifyIgnore: []string{"resource", "compression", "fields",
 					"fields_wo", "fields_wo_version"},
 				ImportStateCheck: func(states []*terraform.InstanceState) error {
 					for _, is := range states {
