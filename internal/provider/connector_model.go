@@ -168,11 +168,10 @@ func writeSecretFields(ctx context.Context, into map[string]client.Field, m type
 	refs := map[string]secretFieldModel{}
 	diags.Append(m.ElementsAs(ctx, &refs, false)...)
 	for k, ref := range refs {
-		f := client.Field{Value: ref.Path.ValueString()}
-		f.Provider = &struct {
-			ID string `json:"id"`
-		}{ID: ref.Provider.ValueString()}
-		into[k] = f
+		into[k] = client.Field{
+			Value:    ref.Path.ValueString(),
+			Provider: &client.FieldProvider{ID: ref.Provider.ValueString()},
+		}
 	}
 }
 

@@ -161,9 +161,7 @@ func testAccSetConnectorField(t *testing.T, kind, name, key, value, spName strin
 			if err != nil || sp == nil {
 				t.Fatalf("finding secret provider %q: %v", spName, err)
 			}
-			f.Provider = &struct {
-				ID string `json:"id"`
-			}{ID: sp.ID}
+			f.Provider = &client.FieldProvider{ID: sp.ID}
 		}
 		req.Fields[key] = f
 		if err := c.UpdateConnector(conn.ID, req); err != nil {
