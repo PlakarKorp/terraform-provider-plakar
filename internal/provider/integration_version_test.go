@@ -213,7 +213,7 @@ func TestIntegrationReadFollowsTheCurrentVersion(t *testing.T) {
 
 // CS-M2-03b: the data source's lookup picks the current version among
 // several, takes a single version even when not current, and refuses
-// several with none current.
+// several with none or more than one current.
 func TestIntegrationByNamePicksTheCurrentVersion(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -228,6 +228,9 @@ func TestIntegrationByNamePicksTheCurrentVersion(t *testing.T) {
 		{"two, none current", []client.InstalledIntegration{
 			{ID: "a", Name: "tool", Version: "v1.0.0"},
 			{ID: "b", Name: "tool", Version: "v1.1.0"}}, ""},
+		{"two, both current", []client.InstalledIntegration{
+			{ID: "a", Name: "tool", Version: "v1.0.0", IsCurrent: true},
+			{ID: "b", Name: "tool", Version: "v1.1.0", IsCurrent: true}}, ""},
 	} {
 		r := newFakeIntegrations(t, &fakeIntegrations{installed: tc.installed})
 		got, err := r.client.IntegrationByName("tool")

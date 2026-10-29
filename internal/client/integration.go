@@ -18,8 +18,9 @@ type Integration struct {
 }
 
 // IntegrationByName is the installed integration of that name. With several
-// versions installed it is the current one; a single installed version is
-// taken even when not current, which is how the server can list one.
+// versions installed it is the current one, and an error unless exactly one
+// is; a single installed version is taken even when not current, which is
+// how the server can list one.
 func (c *Client) IntegrationByName(name string) (*Integration, error) {
 	var res struct {
 		Items []Integration `json:"items"`
@@ -36,13 +37,17 @@ func (c *Client) IntegrationByName(name string) (*Integration, error) {
 	if len(matches) == 1 {
 		return matches[0], nil
 	}
+	var current []*Integration
 	for _, m := range matches {
 		if m.IsCurrent {
-			return m, nil
+			current = append(current, m)
 		}
 	}
+	if len(current) == 1 {
+		return current[0], nil
+	}
 	if len(matches) > 1 {
-		return nil, fmt.Errorf("%d versions of %q are installed and none is current", len(matches), name)
+		return nil, fmt.Errorf("%d versions of %q are installed and %d are current", len(matches), name, len(current))
 	}
 	names := make([]string, 0, len(res.Items))
 	for _, it := range res.Items {
