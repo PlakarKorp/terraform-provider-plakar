@@ -204,11 +204,6 @@ resource "plakar_secret_provider" "leaky" {
 	})
 }
 
-// testAccClient talks to the API directly, for checks on what the server holds.
-func testAccClient() *client.Client {
-	return client.New(os.Getenv("PLAKAR_API_URL"), os.Getenv("PLAKAR_API_KEY"), "")
-}
-
 // testAccCheckSecretProviderField compares a field's value on the server with
 // the expected one. The message never carries either value.
 func testAccCheckSecretProviderField(name, key, want string) resource.TestCheckFunc {
