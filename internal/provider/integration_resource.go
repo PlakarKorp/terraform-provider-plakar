@@ -51,7 +51,11 @@ func (r *integrationResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"not to an organization: managing them needs an API key whose " +
 			"service account holds the platform-admin role, and destroying the " +
 			"resource uninstalls the integration for every organization, " +
-			"including one imported rather than installed by Terraform. Changing " +
+			"including one imported rather than installed by Terraform. The " +
+			"server uninstalls an integration a connector still uses without " +
+			"complaint, and leaves the connector in " +
+			"place; within one configuration, Terraform destroys those first. " +
+			"Changing " +
 			"version installs that version and makes it current; the previous " +
 			"one stays installed, no longer current. With version set, a version " +
 			"made current by hand is put back on the next apply; without, it " +
