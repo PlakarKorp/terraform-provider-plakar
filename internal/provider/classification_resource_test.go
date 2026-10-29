@@ -6,6 +6,7 @@ package provider
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
@@ -193,4 +194,71 @@ func testAccCheckClassificationDestroyed(s *terraform.State) error {
 		}
 	}
 	return nil
+}
+
+// Names the server keeps as written: two that differ only by case are two
+// entries, a percent sequence is not decoded, and a 256-character name, which
+// the search route fails on, still reads back, imports and plans empty.
+func TestAccClassification_namesKeptAsWritten(t *testing.T) {
+	suffix := acctest.RandString(8)
+	upper := "Plakar-Acc-" + suffix + "-EU"
+	lower := "plakar-acc-" + suffix + "-eu"
+	percent := "plakar-acc%20" + suffix
+	long := "plakar-acc-" + suffix + "-"
+	long += strings.Repeat("x", 256-len(long))
+	config := fmt.Sprintf(`
+resource "plakar_environment" "upper" {
+  name = %q
+}
+
+resource "plakar_environment" "lower" {
+  name = %q
+}
+
+resource "plakar_data_class" "percent" {
+  name = %q
+}
+
+resource "plakar_data_class" "long" {
+  name = %q
+}
+`, upper, lower, percent, long)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCheckClassificationDestroyed,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					testAccCheckClassification(client.Environments, upper, true),
+					testAccCheckClassification(client.Environments, lower, true),
+					testAccCheckClassification(client.DataClasses, percent, true),
+					testAccCheckClassification(client.DataClasses, "plakar-acc "+suffix, false),
+					testAccCheckClassification(client.DataClasses, long, true),
+				),
+			},
+			{
+				Config:   config,
+				PlanOnly: true,
+			},
+			{
+				ResourceName:      "plakar_data_class.long",
+				ImportState:       true,
+				ImportStateId:     long,
+				ImportStateVerify: true,
+			},
+			{
+				ResourceName:      "plakar_environment.lower",
+				ImportState:       true,
+				ImportStateId:     lower,
+				ImportStateVerify: true,
+			},
+			{
+				Config:   config,
+				PlanOnly: true,
+			},
+		},
+	})
 }
