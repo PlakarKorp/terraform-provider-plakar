@@ -209,10 +209,14 @@ func (c *Client) OrgID() (string, error) {
 
 // Integration is the slice of the installed-integration record we need.
 type Integration struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	IsCurrent bool   `json:"is_current"`
 }
 
+// IntegrationByName is the installed integration of that name. With several
+// versions installed it is the current one; a single installed version is
+// taken even when not current, which is how the server can list one.
 func (c *Client) IntegrationByName(name string) (*Integration, error) {
 	var res struct {
 		Items []Integration `json:"items"`
@@ -220,10 +224,22 @@ func (c *Client) IntegrationByName(name string) (*Integration, error) {
 	if err := c.Do("GET", "/api/v1/integrations/installed", nil, nil, &res); err != nil {
 		return nil, err
 	}
+	var matches []*Integration
 	for i := range res.Items {
 		if res.Items[i].Name == name {
-			return &res.Items[i], nil
+			matches = append(matches, &res.Items[i])
 		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	for _, m := range matches {
+		if m.IsCurrent {
+			return m, nil
+		}
+	}
+	if len(matches) > 1 {
+		return nil, fmt.Errorf("%d versions of %q are installed and none is current", len(matches), name)
 	}
 	names := make([]string, 0, len(res.Items))
 	for _, it := range res.Items {
