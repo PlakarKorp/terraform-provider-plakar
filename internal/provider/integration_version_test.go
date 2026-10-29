@@ -112,7 +112,7 @@ func runUpdate(t *testing.T, r *integrationResource, prior, planned *integration
 	return got
 }
 
-// CS-M2-14 and 15: a new version, newer or older, is one request that
+// A new version, newer or older, is one request that
 // installs it and makes it current, carrying the name and that version.
 func TestIntegrationUpdateInstallsTheNewVersion(t *testing.T) {
 	for _, tc := range []struct{ from, to string }{
@@ -134,7 +134,7 @@ func TestIntegrationUpdateInstallsTheNewVersion(t *testing.T) {
 	}
 }
 
-// CS-M2-14: the same version sends nothing.
+// The same version sends nothing.
 func TestIntegrationUpdateSameVersionSendsNothing(t *testing.T) {
 	f := &fakeIntegrations{
 		catalog:   []string{"v1.0.0"},
@@ -150,7 +150,7 @@ func TestIntegrationUpdateSameVersionSendsNothing(t *testing.T) {
 	}
 }
 
-// CS-M2-15: a version the catalog does not offer is an error naming it, and
+// A version the catalog does not offer is an error naming it, and
 // nothing is installed.
 func TestIntegrationUpdateUnknownVersion(t *testing.T) {
 	f := &fakeIntegrations{
@@ -171,7 +171,7 @@ func TestIntegrationUpdateUnknownVersion(t *testing.T) {
 	}
 }
 
-// CS-M2-18: a Read that finds another version current writes it to state, so
+// A Read that finds another version current writes it to state, so
 // a pinned version plans the update back; with none current the resource
 // leaves state and the plan installs it again.
 func TestIntegrationReadFollowsTheCurrentVersion(t *testing.T) {
@@ -211,7 +211,7 @@ func TestIntegrationReadFollowsTheCurrentVersion(t *testing.T) {
 	}
 }
 
-// CS-M2-03b: the data source's lookup picks the current version among
+// The data source's lookup picks the current version among
 // several, takes a single version even when not current, and refuses
 // several with none or more than one current.
 func TestIntegrationByNamePicksTheCurrentVersion(t *testing.T) {
