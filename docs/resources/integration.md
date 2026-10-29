@@ -3,12 +3,12 @@
 page_title: "plakar_integration Resource - plakar"
 subcategory: ""
 description: |-
-  An integration installed from the catalog, made the current version of its name. Integrations belong to the whole deployment, not to an organization: managing them needs an API key whose service account holds the platform-admin role, and destroying the resource uninstalls the integration for every organization, including one imported rather than installed by Terraform. Changing version installs that version and makes it current; the previous one stays installed, no longer current. A version made current by hand is put back on the next apply.
+  An integration installed from the catalog, made the current version of its name. Integrations belong to the whole deployment, not to an organization: managing them needs an API key whose service account holds the platform-admin role, and destroying the resource uninstalls the integration for every organization, including one imported rather than installed by Terraform. Changing version installs that version and makes it current; the previous one stays installed, no longer current. With version set, a version made current by hand is put back on the next apply; without, it is adopted. Version changes could not be tested against a live catalog, which offers one version per integration; they are covered by unit tests only.
 ---
 
 # plakar_integration (Resource)
 
-An integration installed from the catalog, made the current version of its name. Integrations belong to the whole deployment, not to an organization: managing them needs an API key whose service account holds the platform-admin role, and destroying the resource uninstalls the integration for every organization, including one imported rather than installed by Terraform. Changing version installs that version and makes it current; the previous one stays installed, no longer current. A version made current by hand is put back on the next apply.
+An integration installed from the catalog, made the current version of its name. Integrations belong to the whole deployment, not to an organization: managing them needs an API key whose service account holds the platform-admin role, and destroying the resource uninstalls the integration for every organization, including one imported rather than installed by Terraform. Changing version installs that version and makes it current; the previous one stays installed, no longer current. With version set, a version made current by hand is put back on the next apply; without, it is adopted. Version changes could not be tested against a live catalog, which offers one version per integration; they are covered by unit tests only.
 
 ## Example Usage
 

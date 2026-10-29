@@ -53,8 +53,11 @@ func (r *integrationResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"resource uninstalls the integration for every organization, " +
 			"including one imported rather than installed by Terraform. Changing " +
 			"version installs that version and makes it current; the previous " +
-			"one stays installed, no longer current. A version made current by " +
-			"hand is put back on the next apply.",
+			"one stays installed, no longer current. With version set, a version " +
+			"made current by hand is put back on the next apply; without, it " +
+			"is adopted. Version changes could not be " +
+			"tested against a live catalog, which offers one version per " +
+			"integration; they are covered by unit tests only.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,
@@ -167,11 +170,13 @@ func (r *integrationResource) Read(ctx context.Context, req resource.ReadRequest
 		resp.Diagnostics.AddError("listing installed integrations", err.Error())
 		return
 	}
-	// Uninstalled, or another version made current: either way the
-	// configured version is no longer what runs, and the plan reinstalls it.
+	// What runs is the current version, whichever it is: another version
+	// made current by hand lands in state, so a pinned version plans the
+	// update that puts it back. With none current, the integration is
+	// uninstalled and the plan installs it again.
 	var found *client.InstalledIntegration
 	for i := range installed {
-		if installed[i].ID == state.ID.ValueString() && installed[i].IsCurrent {
+		if installed[i].IsCurrent {
 			found = &installed[i]
 		}
 	}
@@ -179,17 +184,23 @@ func (r *integrationResource) Read(ctx context.Context, req resource.ReadRequest
 		resp.State.RemoveResource(ctx)
 		return
 	}
+	state.ID = types.StringValue(found.ID)
 	state.Name = types.StringValue(found.Name)
 	state.Version = types.StringValue(found.Version)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-// Update runs only for a version change: the new version is installed and
-// made current, under its own id.
+// Update runs only for a version change, older or newer alike: that version
+// is installed and made current, under its own id.
 func (r *integrationResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan integrationModel
+	var plan, state integrationModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	if plan.Version.Equal(state.Version) {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 		return
 	}
 	id, version, err := r.install(&plan)
