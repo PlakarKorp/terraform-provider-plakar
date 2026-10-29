@@ -2,6 +2,8 @@
 # platform-admin role, and destroying one uninstalls it for every
 # organization. Pin version for a deterministic install; left out, the
 # catalog's highest version is installed once and never upgraded by a plan.
+# Import what is already installed before the first apply (see import.sh):
+# otherwise a later destroy uninstalls it for the whole instance.
 variable "integrations" {
   type = map(string)
   default = {

@@ -210,7 +210,7 @@ func testAccCheckIntegrationsUninstalled(names ...string) resource.TestCheckFunc
 				return fmt.Errorf("%s is still installed", name)
 			}
 		}
-		for _, name := range []string{"s3", "vault"} {
+		for _, name := range []string{"s3", "scaleway", "vault"} {
 			if _, err := c.IntegrationByName(name); err != nil {
 				return fmt.Errorf("an integration the tests must not touch is gone: %w", err)
 			}
