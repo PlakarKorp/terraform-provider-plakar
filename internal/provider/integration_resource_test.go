@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
@@ -23,9 +22,11 @@ import (
 // and every one of them must be gone afterwards. The API key needs the
 // platform-admin role.
 
-// A list installed with for_each, one more pinned to a version: an empty
-// plan, an element dropped from the list uninstalling it alone, an
-// uninstall made by hand put back, and an import by id.
+// Three integrations and one pinned to a version: an empty plan, one
+// dropped from the configuration uninstalling it alone, an uninstall made by
+// hand put back, and an import by id. (The testing framework's state does not
+// support for_each, so the list is spelled out; the for_each pattern of the
+// example is the same resource repeated.)
 func TestAccIntegration_lifecycle(t *testing.T) {
 	// The pinned version is read from the catalog while the steps are built,
 	// before resource.Test would skip a run without TF_ACC.
@@ -36,17 +37,20 @@ func TestAccIntegration_lifecycle(t *testing.T) {
 	pinned := "etcd"
 	listed := []string{"ftp", "imap", "webdav"}
 	config := func(names []string) string {
-		return fmt.Sprintf(`
-resource "plakar_integration" "listed" {
-  for_each = toset([%s])
-  name     = each.value
-}
-
+		hcl := fmt.Sprintf(`
 resource "plakar_integration" "pinned" {
   name    = %q
   version = %q
 }
-`, quoteAll(names), pinned, testAccLatestVersion(t, pinned))
+`, pinned, testAccLatestVersion(t, pinned))
+		for _, n := range names {
+			hcl += fmt.Sprintf(`
+resource "plakar_integration" %q {
+  name = %q
+}
+`, n, n)
+		}
+		return hcl
 	}
 
 	resource.Test(t, resource.TestCase{
@@ -58,11 +62,11 @@ resource "plakar_integration" "pinned" {
 				Config: config(listed),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					testAccCheckIntegrationCurrent("plakar_integration.pinned"),
-					testAccCheckIntegrationCurrent(`plakar_integration.listed["ftp"]`),
-					testAccCheckIntegrationCurrent(`plakar_integration.listed["imap"]`),
-					testAccCheckIntegrationCurrent(`plakar_integration.listed["webdav"]`),
+					testAccCheckIntegrationCurrent("plakar_integration.ftp"),
+					testAccCheckIntegrationCurrent("plakar_integration.imap"),
+					testAccCheckIntegrationCurrent("plakar_integration.webdav"),
 					// Left out, the version is the catalog's highest, kept in state.
-					resource.TestCheckResourceAttr(`plakar_integration.listed["ftp"]`,
+					resource.TestCheckResourceAttr("plakar_integration.ftp",
 						"version", testAccLatestVersion(t, "ftp")),
 					resource.TestCheckResourceAttr("plakar_integration.pinned",
 						"version", testAccLatestVersion(t, pinned)),
@@ -73,15 +77,15 @@ resource "plakar_integration" "pinned" {
 				PlanOnly: true,
 			},
 			{
-				// Dropping one name uninstalls that one and nothing else.
+				// Dropping one uninstalls that one and nothing else.
 				Config: config([]string{"ftp", "webdav"}),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
-						plancheck.ExpectResourceAction(`plakar_integration.listed["imap"]`,
+						plancheck.ExpectResourceAction("plakar_integration.imap",
 							plancheck.ResourceActionDestroy),
-						plancheck.ExpectResourceAction(`plakar_integration.listed["ftp"]`,
+						plancheck.ExpectResourceAction("plakar_integration.ftp",
 							plancheck.ResourceActionNoop),
-						plancheck.ExpectResourceAction(`plakar_integration.listed["webdav"]`,
+						plancheck.ExpectResourceAction("plakar_integration.webdav",
 							plancheck.ResourceActionNoop),
 						plancheck.ExpectResourceAction("plakar_integration.pinned",
 							plancheck.ResourceActionNoop),
@@ -105,11 +109,11 @@ resource "plakar_integration" "pinned" {
 				Config: config([]string{"ftp", "webdav"}),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
-						plancheck.ExpectResourceAction(`plakar_integration.listed["ftp"]`,
+						plancheck.ExpectResourceAction("plakar_integration.ftp",
 							plancheck.ResourceActionCreate),
 					},
 				},
-				Check: testAccCheckIntegrationCurrent(`plakar_integration.listed["ftp"]`),
+				Check: testAccCheckIntegrationCurrent("plakar_integration.ftp"),
 			},
 			{
 				ResourceName:      "plakar_integration.pinned",
@@ -148,14 +152,6 @@ resource "plakar_integration" "unknown" {
 			},
 		},
 	})
-}
-
-func quoteAll(names []string) string {
-	quoted := make([]string, len(names))
-	for i, n := range names {
-		quoted[i] = fmt.Sprintf("%q", n)
-	}
-	return strings.Join(quoted, ", ")
 }
 
 // testAccLatestVersion is what an unpinned install must pick.
