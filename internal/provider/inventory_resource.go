@@ -401,7 +401,9 @@ func credentialAttributes(name, description string) map[string]schema.Attribute 
 				"path": schema.StringAttribute{
 					Required: true,
 					Description: "Where the secret lives in the provider. For Vault: " +
-						"{secret_engine}/{path}#{field}.",
+						"{secret_engine}/{path}#{field}. For Scaleway Secret Manager: " +
+						"{secret_id}#{key}, the secret's value being a JSON object that " +
+						"holds key.",
 				},
 			},
 		},

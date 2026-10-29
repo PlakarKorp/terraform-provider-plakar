@@ -3,12 +3,12 @@
 page_title: "plakar_secret_provider Resource - plakar"
 subcategory: ""
 description: |-
-  A Plakar secret provider: an external secret manager that store, connector and inventory credentials can be resolved from at run time, so their values never reach Plakar's database or Terraform state. Pass the secret provider's own credential in fields_wo, which Terraform 1.11 and later never write to state.
+  A Plakar secret provider: an external secret manager that store, connector and inventory credentials can be resolved from at run time, so their values never reach Plakar's database or Terraform state. Pass the secret provider's own credential in fields_wo, which Terraform 1.11 and later never write to state. Scaleway Secret Manager (integration scaleway) takes scw_region in fields and scw_secret_key in fields_wo: the secret key of an API key whose IAM policy grants SecretManagerReadOnly and SecretManagerSecretAccess on the projects holding the secrets, nothing more. Its test call is not implemented by the integration; a reference resolves when the store, connector or inventory using it runs or synchronizes.
 ---
 
 # plakar_secret_provider (Resource)
 
-A Plakar secret provider: an external secret manager that store, connector and inventory credentials can be resolved from at run time, so their values never reach Plakar's database or Terraform state. Pass the secret provider's own credential in fields_wo, which Terraform 1.11 and later never write to state.
+A Plakar secret provider: an external secret manager that store, connector and inventory credentials can be resolved from at run time, so their values never reach Plakar's database or Terraform state. Pass the secret provider's own credential in fields_wo, which Terraform 1.11 and later never write to state. Scaleway Secret Manager (integration scaleway) takes scw_region in fields and scw_secret_key in fields_wo: the secret key of an API key whose IAM policy grants SecretManagerReadOnly and SecretManagerSecretAccess on the projects holding the secrets, nothing more. Its test call is not implemented by the integration; a reference resolves when the store, connector or inventory using it runs or synchronizes.
 
 ## Example Usage
 
@@ -31,6 +31,40 @@ resource "plakar_secret_provider" "vault" {
     token = var.vault_token
   }
   fields_wo_version = 1
+}
+
+# Scaleway Secret Manager: an API key limited to SecretManagerReadOnly and
+# SecretManagerSecretAccess on the secrets' project. A reference to it reads
+# "<secret id>#<key>", the secret's value being a JSON object.
+variable "scw_secret_key" {
+  type      = string
+  sensitive = true
+  ephemeral = true
+}
+
+resource "plakar_secret_provider" "scaleway" {
+  name        = "Scaleway Secret Manager"
+  integration = "scaleway"
+  fields = {
+    scw_region = "fr-par"
+  }
+  fields_wo = {
+    scw_secret_key = var.scw_secret_key
+  }
+  fields_wo_version = 1
+}
+
+resource "plakar_inventory" "scaleway" {
+  name = "Scaleway"
+  type = "scaleway"
+  scaleway {
+    project_id = "11111111-2222-3333-4444-555555555555"
+    access_key = "SCW-ACCESS-KEY-ID"
+    secret_key_secret = {
+      provider = plakar_secret_provider.scaleway.id
+      path     = "66666666-7777-8888-9999-000000000000#secret_key"
+    }
+  }
 }
 ```
 

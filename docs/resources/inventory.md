@@ -141,7 +141,7 @@ Optional:
 
 Required:
 
-- `path` (String) Where the secret lives in the provider. For Vault: {secret_engine}/{path}#{field}.
+- `path` (String) Where the secret lives in the provider. For Vault: {secret_engine}/{path}#{field}. For Scaleway Secret Manager: {secret_id}#{key}, the secret's value being a JSON object that holds key.
 - `provider` (String) Id of the plakar_secret_provider holding the secret.
 
 
@@ -150,7 +150,7 @@ Required:
 
 Required:
 
-- `path` (String) Where the secret lives in the provider. For Vault: {secret_engine}/{path}#{field}.
+- `path` (String) Where the secret lives in the provider. For Vault: {secret_engine}/{path}#{field}. For Scaleway Secret Manager: {secret_id}#{key}, the secret's value being a JSON object that holds key.
 - `provider` (String) Id of the plakar_secret_provider holding the secret.
 
 

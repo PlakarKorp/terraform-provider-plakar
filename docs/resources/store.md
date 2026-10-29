@@ -139,7 +139,7 @@ resource "plakar_store" "offsite_write_only" {
 
 Required:
 
-- `path` (String) Where the secret lives in the provider. For Vault: {secret_engine}/{path}#{field}, e.g. secret/prod/s3#secret_key.
+- `path` (String) Where the secret lives in the provider. For Vault: {secret_engine}/{path}#{field}, e.g. secret/prod/s3#secret_key. For Scaleway Secret Manager: {secret_id}#{key}, the secret's value being a JSON object that holds key.
 - `provider` (String) Id of the plakar_secret_provider holding the secret.
 
 ## Import
