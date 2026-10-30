@@ -77,6 +77,10 @@ resource "plakar_inventory" "scaleway" {
   name = "Scaleway production"
   type = "scaleway"
 
+  # Discover the project's resources each time Terraform writes the
+  # inventory, which also proves the keys work: a failed sync fails the apply.
+  sync = true
+
   scaleway {
     project_id            = "11111111-2222-3333-4444-555555555555"
     access_key_secret     = { provider = plakar_secret_provider.vault.id, path = "secret/inventories/scaleway#access_key" }
@@ -103,11 +107,14 @@ resource "plakar_inventory" "scaleway" {
 - `k8s` (Block, Optional) Configuration of a k8s inventory. (see [below for nested schema](#nestedblock--k8s))
 - `ovh` (Block, Optional) Configuration of an ovh inventory. (see [below for nested schema](#nestedblock--ovh))
 - `scaleway` (Block, Optional) Configuration of a scaleway inventory. Each credential can be given plainly, as a reference to a secret provider (<name>_secret), or write-only (<name>_wo). (see [below for nested schema](#nestedblock--scaleway))
+- `sync` (Boolean) Synchronize the inventory each time Terraform writes it: after it is created, after any change to its configuration, and when this attribute turns true. A sync discovers the resources of the account, adds the new ones and drops those that no longer exist; it is also when the Control Plane first uses the credentials, so a failed sync fails the apply with the server's reason. Nothing is synchronized when the configuration does not change, and a self-managed inventory, having nothing to discover, refuses it. A failed sync at creation leaves the inventory in state, tainted: the next apply replaces it, or `terraform untaint` then a change to sync_triggers synchronizes it again as is. A failed sync at update leaves the new configuration in state: change sync_triggers to try again. The provider waits up to five minutes for a sync, and for one already running, e.g. started from the web interface. Defaults to false.
+- `sync_triggers` (Map of String) Arbitrary values whose change synchronizes the inventory again without sending its configuration, e.g. to retry after a failed sync. Only acts when sync is true, so never on a self-managed inventory. Stored in state as written: keep secrets out.
 - `vmware` (Block, Optional) Configuration of a vmware inventory. (see [below for nested schema](#nestedblock--vmware))
 
 ### Read-Only
 
 - `id` (String) The ID of this resource.
+- `last_synced_at` (String) When the Control Plane last synchronized the inventory successfully, from Terraform or from the web interface, since its configuration last changed (RFC 3339). Null when it has not: a change to the configuration clears it.
 
 <a id="nestedblock--aws"></a>
 ### Nested Schema for `aws`

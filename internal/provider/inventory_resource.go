@@ -6,6 +6,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -20,6 +21,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 
 	"github.com/PlakarKorp/terraform-provider-plakar/internal/client"
 )
@@ -112,16 +114,23 @@ type inventoryK8SModel struct {
 }
 
 type inventoryModel struct {
-	ID       types.String            `tfsdk:"id"`
-	Name     types.String            `tfsdk:"name"`
-	Type     types.String            `tfsdk:"type"`
-	AWS      *inventoryAWSModel      `tfsdk:"aws"`
-	OVH      *inventoryOVHModel      `tfsdk:"ovh"`
-	Scaleway *inventoryScalewayModel `tfsdk:"scaleway"`
-	GCP      *inventoryGCPModel      `tfsdk:"gcp"`
-	VMWare   *inventoryVMWareModel   `tfsdk:"vmware"`
-	K8S      *inventoryK8SModel      `tfsdk:"k8s"`
+	ID           types.String            `tfsdk:"id"`
+	Name         types.String            `tfsdk:"name"`
+	Type         types.String            `tfsdk:"type"`
+	Sync         types.Bool              `tfsdk:"sync"`
+	SyncTriggers types.Map               `tfsdk:"sync_triggers"`
+	LastSyncedAt types.String            `tfsdk:"last_synced_at"`
+	AWS          *inventoryAWSModel      `tfsdk:"aws"`
+	OVH          *inventoryOVHModel      `tfsdk:"ovh"`
+	Scaleway     *inventoryScalewayModel `tfsdk:"scaleway"`
+	GCP          *inventoryGCPModel      `tfsdk:"gcp"`
+	VMWare       *inventoryVMWareModel   `tfsdk:"vmware"`
+	K8S          *inventoryK8SModel      `tfsdk:"k8s"`
 }
+
+// syncAttributes steer the sync and report on it; they are not part of the
+// configuration the server holds, so a change to them alone sends none.
+var syncAttributes = []string{"sync", "sync_triggers", "last_synced_at"}
 
 func NewInventoryResource() resource.Resource {
 	return &inventoryResource{}
@@ -158,6 +167,43 @@ func (r *inventoryResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
+			},
+			"sync": schema.BoolAttribute{
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+				Description: "Synchronize the inventory each time Terraform writes it: " +
+					"after it is created, after any change to its configuration, and " +
+					"when this attribute turns true. A sync discovers the resources " +
+					"of the account, adds the new ones and drops those that no longer " +
+					"exist; it is also when the Control Plane first uses the " +
+					"credentials, so a failed sync fails the apply with the server's " +
+					"reason. Nothing is synchronized when the configuration does not " +
+					"change, and a self-managed inventory, having nothing to " +
+					"discover, refuses it. A failed sync at creation leaves the " +
+					"inventory in state, tainted: the next apply replaces it, or " +
+					"`terraform untaint` then a change to sync_triggers synchronizes " +
+					"it again as is. A failed sync at update leaves the new " +
+					"configuration in state: change sync_triggers to try again. The " +
+					"provider waits up to five minutes for a sync, and for one " +
+					"already running, e.g. started from the web interface. Defaults " +
+					"to false.",
+			},
+			"sync_triggers": schema.MapAttribute{
+				ElementType: types.StringType,
+				Optional:    true,
+				Description: "Arbitrary values whose change synchronizes the inventory " +
+					"again without sending its configuration, e.g. to retry after a " +
+					"failed sync. Only acts when sync is true, so never on a " +
+					"self-managed inventory. Stored in state as written: keep " +
+					"secrets out.",
+			},
+			"last_synced_at": schema.StringAttribute{
+				Computed: true,
+				Description: "When the Control Plane last synchronized the inventory " +
+					"successfully, from Terraform or from the web interface, since " +
+					"its configuration last changed (RFC 3339). Null when it has not: " +
+					"a change to the configuration clears it.",
 			},
 		},
 		Blocks: map[string]schema.Block{
@@ -283,6 +329,12 @@ func (r *inventoryResource) ValidateConfig(ctx context.Context, req resource.Val
 	typ := config.Type.ValueString()
 	if typ == "" { // unknown during validation, e.g. computed from elsewhere
 		return
+	}
+	if typ == "self-managed" && config.Sync.ValueBool() {
+		resp.Diagnostics.AddAttributeError(path.Root("sync"),
+			"nothing to synchronize",
+			"a self-managed inventory holds resources declared by hand and has nothing to "+
+				"discover; remove sync or set it to false")
 	}
 	// A self-managed inventory has no block of its own, so the mismatch case
 	// below already covers every stray block under it.
@@ -657,20 +709,77 @@ func (r *inventoryResource) Create(ctx context.Context, req resource.CreateReque
 	// transient failure there cannot orphan it and duplicate it on the next
 	// apply.
 	plan.ID = types.StringValue(created.ID)
+	plan.LastSyncedAt = types.StringNull()
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
+	var syncErr error
+	if plan.Sync.ValueBool() {
+		syncErr = r.client.SyncInventory(created.ID)
+	}
+
 	// Read back rather than trusting the plan, the same as every resource
 	// here: state carries what the server holds.
-	inv, err := r.client.GetInventory(created.ID)
-	if err != nil {
-		resp.Diagnostics.AddError("reading inventory after create", err.Error())
+	if !r.readBack(ctx, &plan, "after create", &resp.State, &resp.Diagnostics) {
 		return
 	}
-	plan.refreshFromInventory(inv)
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if syncErr != nil {
+		resp.Diagnostics.AddError("synchronizing inventory",
+			"the inventory was created but did not synchronize: "+syncErr.Error())
+	}
+}
+
+// readBack folds the server's inventory and its last sync into the model and
+// writes it to state.
+func (r *inventoryResource) readBack(ctx context.Context, m *inventoryModel, when string, state *tfsdk.State, diags *diag.Diagnostics) bool {
+	inv, err := r.client.GetInventory(m.ID.ValueString())
+	if err != nil {
+		diags.AddError("reading inventory "+when, err.Error())
+		return false
+	}
+	m.refreshFromInventory(inv)
+	r.refreshLastSync(m, diags)
+	diags.Append(state.Set(ctx, m)...)
+	return !diags.HasError()
+}
+
+// refreshLastSync reads when the inventory last synchronized, which only the
+// organization listing reports. The listing failing is no reason to fail a
+// plan or an apply over an inventory that is fine: the value already held
+// stays, with a warning.
+func (r *inventoryResource) refreshLastSync(m *inventoryModel, diags *diag.Diagnostics) {
+	row, err := r.client.FindInventoryByID(m.ID.ValueString())
+	if err != nil {
+		diags.AddWarning("last_synced_at not refreshed",
+			"reading the organization's inventory listing failed: "+err.Error())
+		return
+	}
+	m.LastSyncedAt = types.StringNull()
+	if row != nil && row.LastUpdate != nil {
+		m.LastSyncedAt = types.StringValue(*row.LastUpdate)
+	}
+}
+
+// configurationChanged reports whether the plan differs from the state in
+// anything the server holds, that is in anything but the sync attributes.
+func configurationChanged(plan tfsdk.Plan, state tfsdk.State) (bool, error) {
+	var p, s map[string]tftypes.Value
+	if err := plan.Raw.As(&p); err != nil {
+		return false, err
+	}
+	if err := state.Raw.As(&s); err != nil {
+		return false, err
+	}
+	// The maps are the values' own: skip the sync attributes, never delete
+	// them.
+	for name, v := range p {
+		if !slices.Contains(syncAttributes, name) && !v.Equal(s[name]) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (r *inventoryResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -691,6 +800,12 @@ func (r *inventoryResource) Read(ctx context.Context, req resource.ReadRequest, 
 	}
 
 	state.refreshFromInventory(inv)
+	r.refreshLastSync(&state, &resp.Diagnostics)
+	// A state written before sync existed, or imported, holds it null: read
+	// it as its default, false, so the plan stays empty.
+	if state.Sync.IsNull() {
+		state.Sync = types.BoolValue(false)
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -702,31 +817,66 @@ func (r *inventoryResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	// The update replaces the whole configuration: a write-only credential
-	// that is not sent again has to go out as the one the server holds.
-	current, err := r.client.GetInventory(state.ID.ValueString())
+	changed, err := configurationChanged(req.Plan, req.State)
 	if err != nil {
-		resp.Diagnostics.AddError("reading inventory before update", err.Error())
+		resp.Diagnostics.AddError("comparing plan and state", err.Error())
 		return
 	}
-	plan.loadWriteOnly(ctx, req.Config, &resp.Diagnostics)
-	if resp.Diagnostics.HasError() {
+	// A sync follows a change of the configuration, sync turning true, or a
+	// change of sync_triggers; none of them without sync.
+	sync := plan.Sync.ValueBool() && (changed || !state.Sync.ValueBool() ||
+		!plan.SyncTriggers.Equal(state.SyncTriggers))
+
+	// Until the read-back says otherwise: a configuration change clears the
+	// last sync server-side, nothing else touches it.
+	plan.LastSyncedAt = state.LastSyncedAt
+	if changed {
+		plan.LastSyncedAt = types.StringNull()
+	}
+	if !changed && !sync {
+		// Only the sync attributes moved, to no effect on the server.
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		return
 	}
-	ireq := plan.toRequest(&state, current)
-	plan.clearWriteOnly()
-	if err := r.client.UpdateInventory(state.ID.ValueString(), ireq); err != nil {
-		resp.Diagnostics.AddError("updating inventory", err.Error())
-		return
+	// Otherwise state is written once the server holds what the plan says:
+	// until then a failure leaves the prior state, so a write-only rotation
+	// whose request failed is sent again by the next apply.
+
+	if changed {
+		// The update replaces the whole configuration: a write-only credential
+		// that is not sent again has to go out as the one the server holds.
+		current, err := r.client.GetInventory(state.ID.ValueString())
+		if err != nil {
+			resp.Diagnostics.AddError("reading inventory before update", err.Error())
+			return
+		}
+		plan.loadWriteOnly(ctx, req.Config, &resp.Diagnostics)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		ireq := plan.toRequest(&state, current)
+		plan.clearWriteOnly()
+		if err := r.client.UpdateInventory(state.ID.ValueString(), ireq); err != nil {
+			resp.Diagnostics.AddError("updating inventory", err.Error())
+			return
+		}
 	}
 
-	inv, err := r.client.GetInventory(state.ID.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("reading inventory after update", err.Error())
+	var syncErr error
+	if sync {
+		syncErr = r.client.SyncInventory(state.ID.ValueString())
+	}
+	if !r.readBack(ctx, &plan, "after update", &resp.State, &resp.Diagnostics) {
 		return
 	}
-	plan.refreshFromInventory(inv)
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if syncErr != nil {
+		what := "the inventory did not synchronize: "
+		if changed {
+			what = "the inventory was updated but did not synchronize: "
+		}
+		resp.Diagnostics.AddError("synchronizing inventory",
+			what+syncErr.Error()+"; change sync_triggers to try again")
+	}
 }
 
 func (r *inventoryResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {

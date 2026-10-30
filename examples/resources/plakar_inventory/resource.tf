@@ -62,6 +62,10 @@ resource "plakar_inventory" "scaleway" {
   name = "Scaleway production"
   type = "scaleway"
 
+  # Discover the project's resources each time Terraform writes the
+  # inventory, which also proves the keys work: a failed sync fails the apply.
+  sync = true
+
   scaleway {
     project_id            = "11111111-2222-3333-4444-555555555555"
     access_key_secret     = { provider = plakar_secret_provider.vault.id, path = "secret/inventories/scaleway#access_key" }
