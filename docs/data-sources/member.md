@@ -3,12 +3,12 @@
 page_title: "plakar_member Data Source - plakar"
 subcategory: ""
 description: |-
-  A member of an organization, looked up by email (a person) or name (a service account, which has no address).
+  A member of an organization, looked up by email (a person) or name (a service account, which has no address). The provider's API key needs the administrator or owner role on the organization: with a lesser one, e.g. operator, the Control Plane answers 403 to the member and grant listings, so plan and import fail.
 ---
 
 # plakar_member (Data Source)
 
-A member of an organization, looked up by email (a person) or name (a service account, which has no address).
+A member of an organization, looked up by email (a person) or name (a service account, which has no address). The provider's API key needs the administrator or owner role on the organization: with a lesser one, e.g. operator, the Control Plane answers 403 to the member and grant listings, so plan and import fail.
 
 ## Example Usage
 

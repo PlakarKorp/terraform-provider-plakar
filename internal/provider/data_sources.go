@@ -362,7 +362,7 @@ func (d *memberDataSource) Metadata(_ context.Context, req datasource.MetadataRe
 func (d *memberDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "A member of an organization, looked up by email (a person) or " +
-			"name (a service account, which has no address).",
+			"name (a service account, which has no address). " + membershipRoleNote,
 		Attributes: map[string]schema.Attribute{
 			"organization_id": schema.StringAttribute{
 				Optional:    true,
@@ -403,7 +403,7 @@ func (d *memberDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 	}
 	member, err := d.client.FindMember(orgID, config.Email.ValueString(), config.Name.ValueString())
 	if err != nil {
-		resp.Diagnostics.AddError("looking up member", err.Error())
+		resp.Diagnostics.AddError("looking up member", withRoleHint(err))
 		return
 	}
 	if member == nil {

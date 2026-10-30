@@ -68,6 +68,12 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("%s %s answered %d: %s", e.Method, e.Path, e.Status, e.Detail)
 }
 
+// IsForbidden reports a 403: the API key's roles do not cover the route.
+func IsForbidden(err error) bool {
+	var apiErr *Error
+	return errors.As(err, &apiErr) && apiErr.Status == http.StatusForbidden
+}
+
 // IsNotFound reports a 404, the signal Read uses to drop a resource from state.
 func IsNotFound(err error) bool {
 	var apiErr *Error

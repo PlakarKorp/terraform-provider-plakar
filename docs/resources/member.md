@@ -3,12 +3,12 @@
 page_title: "plakar_member Resource - plakar"
 subcategory: ""
 description: |-
-  A membership — a person or a service account belonging to an organization. Adding a person goes through the admin invitation path: a brand-new address gets an account with a one-time generated password (in generated_password, shown once and kept in state — treat state accordingly); an address that already has an account simply gains the membership. A membership carries no permission; what a member may do is a plakar_grant. Destroying the resource removes the membership, not the person's account.
+  A membership — a person or a service account belonging to an organization. Adding a person goes through the admin invitation path: a brand-new address gets an account with a one-time generated password (in generated_password, shown once and kept in state — treat state accordingly); an address that already has an account simply gains the membership. A membership carries no permission; what a member may do is a plakar_grant. Destroying the resource removes the membership, not the person's account. The provider's API key needs the administrator or owner role on the organization: with a lesser one, e.g. operator, the Control Plane answers 403 to the member and grant listings, so plan and import fail.
 ---
 
 # plakar_member (Resource)
 
-A membership — a person or a service account belonging to an organization. Adding a person goes through the admin invitation path: a brand-new address gets an account with a one-time generated password (in generated_password, shown once and kept in state — treat state accordingly); an address that already has an account simply gains the membership. A membership carries no permission; what a member may do is a plakar_grant. Destroying the resource removes the membership, not the person's account.
+A membership — a person or a service account belonging to an organization. Adding a person goes through the admin invitation path: a brand-new address gets an account with a one-time generated password (in generated_password, shown once and kept in state — treat state accordingly); an address that already has an account simply gains the membership. A membership carries no permission; what a member may do is a plakar_grant. Destroying the resource removes the membership, not the person's account. The provider's API key needs the administrator or owner role on the organization: with a lesser one, e.g. operator, the Control Plane answers 403 to the member and grant listings, so plan and import fail.
 
 ## Example Usage
 
