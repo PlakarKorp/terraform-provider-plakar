@@ -201,6 +201,7 @@ resource "plakar_inventory" "scw" {
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccSecretFieldsPreCheck(t) },
+		CheckDestroy:             testAccCheckDestroyed,
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		TerraformVersionChecks: []tfversion.TerraformVersionCheck{
 			tfversion.SkipBelow(tfversion.Version1_11_0),

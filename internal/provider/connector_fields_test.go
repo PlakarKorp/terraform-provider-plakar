@@ -251,3 +251,31 @@ func testAccCheckInventoryFieldValue(name, key, want string) resource.TestCheckF
 		return nil
 	}
 }
+
+// testAccCheckDestroyed checks that every store, connector, inventory and
+// secret provider a test created is gone from the server once destroyed, so a
+// destroy that leaves an object behind fails the test instead of the sandbox
+// filling up unseen.
+func testAccCheckDestroyed(s *terraform.State) error {
+	c := testAccClient()
+	for _, rs := range s.RootModule().Resources {
+		var err error
+		switch rs.Type {
+		case "plakar_store", "plakar_connector":
+			_, err = c.GetConnector(rs.Primary.ID)
+		case "plakar_inventory":
+			_, err = c.GetInventory(rs.Primary.ID)
+		case "plakar_secret_provider":
+			_, err = c.GetSecretProvider(rs.Primary.ID)
+		default:
+			continue
+		}
+		if err == nil {
+			return fmt.Errorf("%s %s still exists after destroy", rs.Type, rs.Primary.ID)
+		}
+		if !client.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
+}
