@@ -13,10 +13,14 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/config"
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 	"github.com/hashicorp/terraform-plugin-testing/tfversion"
+
+	"github.com/PlakarKorp/terraform-provider-plakar/internal/client"
 )
 
 // The self-managed story end to end: an inventory declared as code, a
@@ -629,14 +633,21 @@ func TestAccInventory_noSync(t *testing.T) {
 }
 
 // A failed sync fails the apply with the server's reason. At creation the
-// inventory stays in state, tainted, so the next apply replaces it; at update
-// the new configuration stays in state.
+// inventory stays in state, tainted, so the next apply replaces it. At update
+// the new configuration stays in state with sync recorded false, so the next
+// apply tries the sync again by itself, here failing again since the key is
+// still missing. sync turning true on an inventory whose key is missing goes
+// the same way.
 func TestAccInventory_syncFailure(t *testing.T) {
 	suffix := acctest.RandString(8)
 	variables := testAccInventorySyncVariables()
 	hcl := func(key string) string {
 		return testAccInventorySyncConfig(suffix, "sync failure", key, "sync = true")
 	}
+	retry := resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+		plancheck.ExpectResourceAction("plakar_inventory.scw", plancheck.ResourceActionUpdate),
+		plancheck.ExpectKnownValue("plakar_inventory.scw", tfjsonpath.New("sync"), knownvalue.Bool(true)),
+	}}
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccScalewaySecretManagerPreCheck(t) },
 		CheckDestroy:             testAccCheckDestroyed,
@@ -658,17 +669,37 @@ func TestAccInventory_syncFailure(t *testing.T) {
 			},
 			{
 				Config: hcl("no_such_key"), ConfigVariables: variables,
-				ExpectError: regexp.MustCompile(`updated but did not\s+synchronize:\s+Failed\s+to\s+synchronize\s+inventory:\s+key\s+not\s+found\s+in\s+secret`),
+				ExpectError: regexp.MustCompile(`updated but did not\s+synchronize:\s+Failed\s+to\s+synchronize\s+inventory:\s+key\s+not\s+found\s+in\s+secret;\s+the\s+next\s+apply\s+tries\s+again`),
 			},
+			// Same configuration: the plan still has the sync to do, and
+			// the apply tries it, without the configuration being sent.
 			{
 				Config: hcl("no_such_key"), ConfigVariables: variables,
-				PlanOnly: true,
+				ConfigPlanChecks: retry,
+				ExpectError:      regexp.MustCompile(`the inventory did not\s+synchronize:\s+Failed\s+to\s+synchronize\s+inventory:\s+key\s+not\s+found`),
 			},
 			{
 				Config: hcl("secret_key"), ConfigVariables: variables,
 				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
 					plancheck.ExpectResourceAction("plakar_inventory.scw", plancheck.ResourceActionUpdate),
 				}},
+				Check: resource.TestCheckResourceAttrSet("plakar_inventory.scw", "last_synced_at"),
+			},
+			// sync turning true on an inventory whose key is missing.
+			{
+				Config: testAccInventorySyncConfig(suffix, "sync failure", "no_such_key", "sync = false"), ConfigVariables: variables,
+			},
+			{
+				Config: hcl("no_such_key"), ConfigVariables: variables,
+				ExpectError: regexp.MustCompile(`the inventory did not\s+synchronize:\s+Failed\s+to\s+synchronize\s+inventory:\s+key\s+not\s+found`),
+			},
+			{
+				Config: hcl("no_such_key"), ConfigVariables: variables,
+				ConfigPlanChecks: retry,
+				ExpectError:      regexp.MustCompile(`the inventory did not\s+synchronize`),
+			},
+			{
+				Config: hcl("secret_key"), ConfigVariables: variables,
 				Check: resource.TestCheckResourceAttrSet("plakar_inventory.scw", "last_synced_at"),
 			},
 		},
@@ -691,5 +722,107 @@ resource "plakar_inventory" "hand" {
 			PlanOnly:    true,
 			ExpectError: regexp.MustCompile(`nothing to synchronize`),
 		}},
+	})
+}
+
+// testAccSetSecretProviderField sets one field of the named secret provider
+// through the API, behind Terraform's back: a way to break, then mend, the
+// key an inventory reads without its configuration changing. A write-only
+// field is never read back, so Terraform sees no drift.
+func testAccSetSecretProviderField(t *testing.T, name, field, value string) func() {
+	return func() {
+		c := testAccClient()
+		summary, err := c.FindSecretProvider(name)
+		if err != nil || summary == nil {
+			t.Fatalf("finding secret provider %q: %v", name, err)
+		}
+		sp, err := c.GetSecretProvider(summary.ID)
+		if err != nil {
+			t.Fatalf("reading secret provider %q: %v", name, err)
+		}
+		req := &client.SecretProviderRequest{Name: sp.Name, Protocol: sp.Protocol, Fields: sp.Fields}
+		req.Integration.ID = sp.Integration.ID
+		req.Fields[field] = client.Field{Value: value}
+		if err := c.UpdateSecretProvider(summary.ID, req); err != nil {
+			t.Fatalf("updating secret provider %q: %v", name, err)
+		}
+	}
+}
+
+// A sync that fails at update is tried again by the next apply, with no
+// change to the configuration, until it succeeds: after a configuration
+// change, after a change of sync_triggers alone, and after sync turning true
+// alone. The key is broken and
+// mended behind Terraform's back, in the secret provider the inventory reads
+// it through.
+func TestAccInventory_syncRetry(t *testing.T) {
+	suffix := acctest.RandString(8)
+	variables := testAccInventorySyncVariables()
+	spName := "TF acceptance sync " + suffix
+	good := os.Getenv("PLAKAR_ACC_SCW_SM_SECRET_KEY")
+	breakKey := testAccSetSecretProviderField(t, spName, "scw_secret_key", "not-a-scaleway-secret-key")
+	mendKey := testAccSetSecretProviderField(t, spName, "scw_secret_key", good)
+	hcl := func(name, sync string) string {
+		return testAccInventorySyncConfig(suffix, name, "secret_key", sync)
+	}
+	retry := resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+		plancheck.ExpectResourceAction("plakar_inventory.scw", plancheck.ResourceActionUpdate),
+		plancheck.ExpectKnownValue("plakar_inventory.scw", tfjsonpath.New("sync"), knownvalue.Bool(true)),
+		plancheck.ExpectResourceAction("plakar_secret_provider.scw", plancheck.ResourceActionNoop),
+	}}
+	failed := regexp.MustCompile(`the inventory did not\s+synchronize:`)
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccScalewaySecretManagerPreCheck(t) },
+		CheckDestroy:             testAccCheckDestroyed,
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		TerraformVersionChecks: []tfversion.TerraformVersionCheck{
+			tfversion.SkipBelow(tfversion.Version1_11_0),
+		},
+		Steps: []resource.TestStep{
+			{Config: hcl("retry", "sync = true"), ConfigVariables: variables},
+			// A configuration change, the key broken.
+			{
+				PreConfig: breakKey,
+				Config:    hcl("retry renamed", "sync = true"), ConfigVariables: variables,
+				ExpectError: regexp.MustCompile(`updated but did not\s+synchronize:[\s\S]*the\s+next\s+apply\s+tries\s+again`),
+			},
+			{Config: hcl("retry renamed", "sync = true"), ConfigVariables: variables, ConfigPlanChecks: retry, ExpectError: failed},
+			{
+				PreConfig: mendKey,
+				Config:    hcl("retry renamed", "sync = true"), ConfigVariables: variables, ConfigPlanChecks: retry,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrSet("plakar_inventory.scw", "last_synced_at"),
+					testAccCheckInventoryDiscovered("plakar_inventory.scw", true),
+				),
+			},
+			// sync_triggers alone, the key broken.
+			{
+				PreConfig: breakKey,
+				Config:    hcl("retry renamed", "sync = true\n  sync_triggers = { retry = \"1\" }"), ConfigVariables: variables,
+				ExpectError: failed,
+			},
+			{Config: hcl("retry renamed", "sync = true\n  sync_triggers = { retry = \"1\" }"), ConfigVariables: variables, ConfigPlanChecks: retry, ExpectError: failed},
+			{
+				PreConfig: mendKey,
+				Config:    hcl("retry renamed", "sync = true\n  sync_triggers = { retry = \"1\" }"), ConfigVariables: variables, ConfigPlanChecks: retry,
+				Check: resource.TestCheckResourceAttrSet("plakar_inventory.scw", "last_synced_at"),
+			},
+			// sync turning true alone, the key broken.
+			{Config: hcl("retry renamed", "sync = false\n  sync_triggers = { retry = \"1\" }"), ConfigVariables: variables},
+			{
+				PreConfig: breakKey,
+				Config:    hcl("retry renamed", "sync = true\n  sync_triggers = { retry = \"1\" }"), ConfigVariables: variables,
+				ExpectError: failed,
+			},
+			{Config: hcl("retry renamed", "sync = true\n  sync_triggers = { retry = \"1\" }"), ConfigVariables: variables, ConfigPlanChecks: retry, ExpectError: failed},
+			{
+				PreConfig: mendKey,
+				Config:    hcl("retry renamed", "sync = true\n  sync_triggers = { retry = \"1\" }"), ConfigVariables: variables, ConfigPlanChecks: retry,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrSet("plakar_inventory.scw", "last_synced_at"),
+					testAccCheckInventoryDiscovered("plakar_inventory.scw", true),
+				),
+			},
+		},
 	})
 }

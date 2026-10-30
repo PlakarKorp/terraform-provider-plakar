@@ -290,24 +290,55 @@ func TestInventoryUpdateSyncsOnlyWhenTheInventoryIsWritten(t *testing.T) {
 	}
 }
 
-// A failed sync at update fails the apply and leaves the new configuration in
-// state, so the retry is a change to sync_triggers.
-func TestInventoryUpdateSyncFailureKeepsTheNewConfiguration(t *testing.T) {
-	f := &fakeInventory{inv: client.Inventory{ID: "inv", Name: "a", Type: "aws"},
-		syncFail: "Failed to synchronize inventory: list buckets: Access Denied"}
-	r := newFakeInventory(t, f)
-	got, resp := runInventoryUpdate(t, r, applied(awsInventory("a", true), ""), awsInventory("b", true))
-	if !resp.Diagnostics.HasError() {
-		t.Fatal("a failed sync did not fail the update")
-	}
-	detail := resp.Diagnostics.Errors()[0].Detail()
-	for _, want := range []string{"updated but did not synchronize", f.syncFail, "sync_triggers"} {
-		if !strings.Contains(detail, want) {
-			t.Errorf("error %q does not say %q", detail, want)
+// A failed sync at update fails the apply and keeps the new configuration in
+// state, the server holding it, but records sync as false and sync_triggers
+// as they were: the next plan has a diff, and its apply synchronizes again
+// without sending the configuration.
+func TestInventoryUpdateSyncFailureLeavesARetry(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		prior, plan *inventoryModel
+		changed     bool
+	}{
+		{name: "configuration change", prior: awsInventory("a", true), plan: awsInventory("b", true), changed: true},
+		{name: "triggers change", prior: awsInventory("a", true, "retry=1"), plan: awsInventory("a", true, "retry=2")},
+		{name: "sync turns true", prior: awsInventory("a", false), plan: awsInventory("a", true)},
+	} {
+		f := &fakeInventory{inv: client.Inventory{ID: "inv", Name: "a", Type: "aws"},
+			syncFail: "Failed to synchronize inventory: list buckets: Access Denied"}
+		r := newFakeInventory(t, f)
+		prior := applied(tc.prior, "")
+		got, resp := runInventoryUpdate(t, r, prior, tc.plan)
+		if !resp.Diagnostics.HasError() {
+			t.Fatalf("%s: a failed sync did not fail the update", tc.name)
 		}
-	}
-	if got.Name.ValueString() != "b" {
-		t.Errorf("state name %v, want the new configuration", got.Name)
+		detail := resp.Diagnostics.Errors()[0].Detail()
+		want := []string{f.syncFail, "the next apply tries again"}
+		if tc.changed {
+			want = append(want, "updated but did not synchronize")
+		}
+		for _, w := range want {
+			if !strings.Contains(detail, w) {
+				t.Errorf("%s: error %q does not say %q", tc.name, detail, w)
+			}
+		}
+		if got.Name.ValueString() != tc.plan.Name.ValueString() {
+			t.Errorf("%s: state name %v, want the new configuration", tc.name, got.Name)
+		}
+		if got.Sync.ValueBool() || !got.SyncTriggers.Equal(prior.SyncTriggers) {
+			t.Errorf("%s: state sync %v, sync_triggers %v, want false and the prior triggers", tc.name, got.Sync, got.SyncTriggers)
+		}
+
+		// The next apply, from that state to the same plan: one sync, no
+		// configuration sent.
+		f.syncFail, f.requests = "", nil
+		_, resp = runInventoryUpdate(t, r, &got, tc.plan)
+		if resp.Diagnostics.HasError() {
+			t.Fatalf("%s: retry: %v", tc.name, resp.Diagnostics)
+		}
+		if f.count(postConfig) != 0 || f.count(getSync) != 1 {
+			t.Errorf("%s: retry made %v, want one sync and no configuration write", tc.name, f.requests)
+		}
 	}
 }
 

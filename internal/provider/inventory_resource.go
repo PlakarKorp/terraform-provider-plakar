@@ -183,8 +183,11 @@ func (r *inventoryResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 					"discover, refuses it. A failed sync at creation leaves the " +
 					"inventory in state, tainted: the next apply replaces it, or " +
 					"`terraform untaint` then a change to sync_triggers synchronizes " +
-					"it again as is. A failed sync at update leaves the new " +
-					"configuration in state: change sync_triggers to try again. The " +
+					"it again as is. A failed sync at update keeps the new " +
+					"configuration in state but records sync as false and " +
+					"sync_triggers as they were, so the next plan shows sync turning " +
+					"true and the next apply tries again by itself, without sending " +
+					"the configuration. The " +
 					"provider waits up to five minutes for a sync, and for one " +
 					"already running, e.g. started from the web interface. Defaults " +
 					"to false.",
@@ -866,6 +869,14 @@ func (r *inventoryResource) Update(ctx context.Context, req resource.UpdateReque
 	if sync {
 		syncErr = r.client.SyncInventory(state.ID.ValueString())
 	}
+	if syncErr != nil {
+		// The server holds the new configuration, so state does too; but it
+		// must not say the inventory is synchronized. sync recorded false,
+		// and sync_triggers as they were, leave a diff for the next plan,
+		// whose apply synchronizes without sending the configuration again.
+		plan.Sync = types.BoolValue(false)
+		plan.SyncTriggers = state.SyncTriggers
+	}
 	if !r.readBack(ctx, &plan, "after update", &resp.State, &resp.Diagnostics) {
 		return
 	}
@@ -875,7 +886,7 @@ func (r *inventoryResource) Update(ctx context.Context, req resource.UpdateReque
 			what = "the inventory was updated but did not synchronize: "
 		}
 		resp.Diagnostics.AddError("synchronizing inventory",
-			what+syncErr.Error()+"; change sync_triggers to try again")
+			what+syncErr.Error()+"; the next apply tries again")
 	}
 }
 
