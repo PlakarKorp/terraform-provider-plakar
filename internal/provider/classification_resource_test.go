@@ -83,6 +83,16 @@ resource "plakar_data_class" "test" {
 				ImportStateId:     renamed,
 				ImportStateVerify: true,
 			},
+			// The same import, the organization named: "<organization_id>/<name>".
+			{
+				ResourceName: "plakar_environment.test",
+				ImportState:  true,
+				ImportStateIdFunc: func(*terraform.State) (string, error) {
+					org, err := testAccClient().OrgID()
+					return org + "/" + env, err
+				},
+				ImportStateVerify: true,
+			},
 			{
 				// Deleted by hand: the next plan creates it again.
 				PreConfig: func() {
@@ -261,4 +271,23 @@ resource "plakar_data_class" "long" {
 			},
 		},
 	})
+}
+
+// An import id is the name, or "<organization_id>/<name>"; a name holding a
+// slash stays whole unless what precedes it is shaped like an id.
+func TestClassificationImportID(t *testing.T) {
+	for id, want := range map[string][2]string{
+		"production":    {"", "production"},
+		"eu/production": {"", "eu/production"},
+		"1505cf9a-c0bb-49bc-974b-e885643b0f37/production":    {"1505cf9a-c0bb-49bc-974b-e885643b0f37", "production"},
+		"1505cf9a-c0bb-49bc-974b-e885643b0f37/eu/production": {"1505cf9a-c0bb-49bc-974b-e885643b0f37", "eu/production"},
+	} {
+		org, name := "", id
+		if m := importOrganization.FindStringSubmatch(id); m != nil {
+			org, name = m[1], m[2]
+		}
+		if org != want[0] || name != want[1] {
+			t.Errorf("%q reads as organization %q, name %q; want %q, %q", id, org, name, want[0], want[1])
+		}
+	}
 }

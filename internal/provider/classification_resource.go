@@ -6,6 +6,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"regexp"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -72,7 +73,12 @@ func (r *classificationResource) Schema(_ context.Context, _ resource.SchemaRequ
 			"would delete a value Terraform never made. Names are kept exactly as "+
 			"written, case and spaces included, so Prod and prod are two %[1]ss. "+
 			"There is no update: changing the name replaces. Destroying the "+
-			"resource removes the name for the whole organization.", r.noun, r.defaults),
+			"resource removes the name for the whole organization. An import "+
+			"takes the name, in the provider's organization, or "+
+			"<organization_id>/<name> for another one: importing by the name alone "+
+			"a %[1]s whose configuration sets organization_id to another "+
+			"organization plans a replacement, which would delete the name from the "+
+			"provider's organization.", r.noun, r.defaults),
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:      true,
@@ -215,13 +221,23 @@ func (r *classificationResource) Delete(ctx context.Context, req resource.Delete
 	}
 }
 
-// ImportState takes the name alone, in the provider's organization. A name may
-// hold a slash, so no "<organization_id>/<name>" form is offered.
+// importOrganization is an organization id ahead of a classification name in
+// an import id: "<organization_id>/<name>".
+var importOrganization = regexp.MustCompile(`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/(.+)$`)
+
+// ImportState takes the name, in the provider's organization, or
+// "<organization_id>/<name>" for another one. A name may hold a slash, so the
+// prefix is only read as an organization when it is shaped like an id.
 func (r *classificationResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	if req.ID == "" {
-		resp.Diagnostics.AddError("unexpected import id", "expected the "+r.noun+" name")
+	name := req.ID
+	if m := importOrganization.FindStringSubmatch(req.ID); m != nil {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("organization_id"), m[1])...)
+		name = m[2]
+	}
+	if name == "" {
+		resp.Diagnostics.AddError("unexpected import id", "expected the "+r.noun+" name, or <organization_id>/<name>")
 		return
 	}
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("name"), req.ID)...)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("name"), name)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), name)...)
 }
