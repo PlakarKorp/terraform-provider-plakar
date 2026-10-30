@@ -1,3 +1,32 @@
+# The Vault secret provider the references below read from (see
+# plakar_secret_provider), declared here so the example stands alone.
+variable "vault_token" {
+  type      = string
+  sensitive = true
+  ephemeral = true
+}
+
+resource "plakar_secret_provider" "vault" {
+  name        = "Vault"
+  integration = "vault"
+  fields = {
+    url = "https://vault.example.com:8200"
+  }
+  fields_wo = {
+    token = var.vault_token
+  }
+  fields_wo_version = 1
+}
+
+variable "aws_access_key" {
+  type = string
+}
+
+variable "aws_secret_access_key" {
+  type      = string
+  sensitive = true
+}
+
 # The fleet declared by hand: a self-managed inventory carries no
 # configuration, its resources are declared with plakar_inventory_resource.
 resource "plakar_inventory" "fleet" {

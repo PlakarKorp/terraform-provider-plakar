@@ -39,12 +39,17 @@ resource "plakar_secret_provider" "scaleway" {
   fields_wo_version = 1
 }
 
+# The access key id is not a secret: a variable, not a placeholder.
+variable "scw_access_key" {
+  type = string
+}
+
 resource "plakar_inventory" "scaleway" {
   name = "Scaleway"
   type = "scaleway"
   scaleway {
     project_id = "11111111-2222-3333-4444-555555555555"
-    access_key = "SCW-ACCESS-KEY-ID"
+    access_key = var.scw_access_key
     secret_key_secret = {
       provider = plakar_secret_provider.scaleway.id
       path     = "66666666-7777-8888-9999-000000000000#secret_key"
