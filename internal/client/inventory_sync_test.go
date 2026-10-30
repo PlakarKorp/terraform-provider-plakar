@@ -4,6 +4,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -66,7 +67,7 @@ func newSyncClient(t *testing.T, f *fakeSync) *Client {
 func TestSyncInventoryOutlastsTheGenericTimeout(t *testing.T) {
 	f := &fakeSync{delay: 400 * time.Millisecond, answers: []string{`{"ok":true}`}}
 	c := newSyncClient(t, f)
-	if err := c.SyncInventory("inv"); err != nil {
+	if err := c.SyncInventory(context.Background(), "inv"); err != nil {
 		t.Fatalf("a sync slower than the generic timeout failed: %v", err)
 	}
 	// Every other call keeps the generic timeout.
@@ -78,7 +79,7 @@ func TestSyncInventoryOutlastsTheGenericTimeout(t *testing.T) {
 func TestSyncInventoryPastItsOwnTimeout(t *testing.T) {
 	f := &fakeSync{delay: 1600 * time.Millisecond, answers: []string{`{"ok":true}`}}
 	c := newSyncClient(t, f)
-	err := c.SyncInventory("inv")
+	err := c.SyncInventory(context.Background(), "inv")
 	if err == nil {
 		t.Fatal("a sync slower than its own timeout succeeded")
 	}
@@ -92,7 +93,7 @@ func TestSyncInventoryPastItsOwnTimeout(t *testing.T) {
 func TestSyncInventoryNotOKIsTheServersError(t *testing.T) {
 	f := &fakeSync{answers: []string{`{"ok":false,"error":"Failed to synchronize inventory: key not found in secret"}`}}
 	c := newSyncClient(t, f)
-	err := c.SyncInventory("inv")
+	err := c.SyncInventory(context.Background(), "inv")
 	if err == nil || err.Error() != "Failed to synchronize inventory: key not found in secret" {
 		t.Fatalf("got %v, want the server's message", err)
 	}
@@ -105,7 +106,7 @@ func TestSyncInventoryWaitsForARunningSync(t *testing.T) {
 	busy := `{"ok":false,"error":"Failed to synchronize inventory: inventory refresh already in progress"}`
 	f := &fakeSync{answers: []string{busy, busy, `{"ok":true}`}}
 	c := newSyncClient(t, f)
-	if err := c.SyncInventory("inv"); err != nil {
+	if err := c.SyncInventory(context.Background(), "inv"); err != nil {
 		t.Fatalf("a sync behind a running one failed: %v", err)
 	}
 	if f.syncs != 3 {
@@ -118,7 +119,7 @@ func TestSyncInventoryGivesUpOnARunningSyncAtItsTimeout(t *testing.T) {
 	f := &fakeSync{answers: []string{busy}}
 	c := newSyncClient(t, f)
 	start := time.Now()
-	err := c.SyncInventory("inv")
+	err := c.SyncInventory(context.Background(), "inv")
 	// Whether the deadline falls during a pause or during a request, the
 	// error says the server was busy.
 	if err == nil || !strings.Contains(err.Error(), "already in progress") {
@@ -137,7 +138,7 @@ func TestSyncInventoryRetriesShareTheDeadline(t *testing.T) {
 		answers: []string{busy, busy, busy, `{"ok":true}`}}
 	c := newSyncClient(t, f)
 	start := time.Now()
-	err := c.SyncInventory("inv")
+	err := c.SyncInventory(context.Background(), "inv")
 	for _, want := range []string{"within 1s", "already in progress"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("got %v, want it to say %q", err, want)
@@ -145,5 +146,24 @@ func TestSyncInventoryRetriesShareTheDeadline(t *testing.T) {
 	}
 	if took := time.Since(start); took > 1500*time.Millisecond {
 		t.Errorf("took %s, well past the 1s deadline", took)
+	}
+}
+
+// Cancelling the context, as Ctrl-C does during an apply, ends the wait
+// behind a running sync at once.
+func TestSyncInventoryStopsWhenCancelled(t *testing.T) {
+	busy := `{"ok":false,"error":"Failed to synchronize inventory: inventory refresh already in progress"}`
+	f := &fakeSync{answers: []string{busy}}
+	c := newSyncClient(t, f)
+	c.syncRetry = 800 * time.Millisecond // within the 1s deadline: the wait the cancellation cuts short
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	start := time.Now()
+	err := c.SyncInventory(ctx, "inv")
+	if err == nil || !strings.Contains(err.Error(), "interrupted") || !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("got %v, want the interruption", err)
+	}
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Errorf("returned after %s, not cut short by the cancellation", took)
 	}
 }

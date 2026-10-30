@@ -720,7 +720,7 @@ func (r *inventoryResource) Create(ctx context.Context, req resource.CreateReque
 
 	var syncErr error
 	if plan.Sync.ValueBool() {
-		syncErr = r.client.SyncInventory(created.ID)
+		syncErr = r.client.SyncInventory(ctx, created.ID)
 	}
 
 	// Read back rather than trusting the plan, the same as every resource
@@ -867,7 +867,7 @@ func (r *inventoryResource) Update(ctx context.Context, req resource.UpdateReque
 
 	var syncErr error
 	if sync {
-		syncErr = r.client.SyncInventory(state.ID.ValueString())
+		syncErr = r.client.SyncInventory(ctx, state.ID.ValueString())
 	}
 	if syncErr != nil {
 		// The server holds the new configuration, so state does too; but it

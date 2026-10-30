@@ -9,6 +9,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -127,10 +128,10 @@ func (c *Client) token(refresh bool) (string, error) {
 // --- transport --------------------------------------------------------------
 
 func (c *Client) raw(method, path, token string, body, query any, out any) error {
-	return c.send(c.http, method, path, token, body, query, out)
+	return c.send(context.Background(), c.http, method, path, token, body, query, out)
 }
 
-func (c *Client) send(hc *http.Client, method, path, token string, body, query any, out any) error {
+func (c *Client) send(ctx context.Context, hc *http.Client, method, path, token string, body, query any, out any) error {
 	u := c.APIURL + path
 	if q, ok := query.(url.Values); ok && len(q) > 0 {
 		u += "?" + q.Encode()
@@ -143,7 +144,7 @@ func (c *Client) send(hc *http.Client, method, path, token string, body, query a
 		}
 		rdr = bytes.NewReader(buf)
 	}
-	req, err := http.NewRequest(method, u, rdr)
+	req, err := http.NewRequestWithContext(ctx, method, u, rdr)
 	if err != nil {
 		return err
 	}
@@ -181,21 +182,21 @@ func (c *Client) send(hc *http.Client, method, path, token string, body, query a
 
 // Do performs an authenticated request with one transparent re-login on 401.
 func (c *Client) Do(method, path string, body any, query url.Values, out any) error {
-	return c.do(c.http, method, path, body, query, out)
+	return c.do(context.Background(), c.http, method, path, body, query, out)
 }
 
-func (c *Client) do(hc *http.Client, method, path string, body any, query url.Values, out any) error {
+func (c *Client) do(ctx context.Context, hc *http.Client, method, path string, body any, query url.Values, out any) error {
 	tok, err := c.token(false)
 	if err != nil {
 		return err
 	}
-	err = c.send(hc, method, path, tok, body, query, out)
+	err = c.send(ctx, hc, method, path, tok, body, query, out)
 	var apiErr *Error
 	if errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized {
 		if tok, err = c.token(true); err != nil {
 			return err
 		}
-		err = c.send(hc, method, path, tok, body, query, out)
+		err = c.send(ctx, hc, method, path, tok, body, query, out)
 	}
 	return err
 }

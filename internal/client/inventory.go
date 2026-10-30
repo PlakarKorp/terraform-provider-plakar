@@ -4,6 +4,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -139,8 +140,9 @@ const syncBusy = "already in progress"
 // answers 200 even when the sync fails: the failure is ok false plus the
 // server's message, returned here as the error. A sync refused because
 // another one of the same inventory is running is asked again until
-// SyncTimeout has passed.
-func (c *Client) SyncInventory(id string) error {
+// SyncTimeout has passed. Cancelling ctx, e.g. Ctrl-C during an apply, stops
+// the request and the wait between two.
+func (c *Client) SyncInventory(ctx context.Context, id string) error {
 	deadline := time.Now().Add(c.syncHTTP.Timeout)
 	busy := "" // the server's last refusal, while waiting behind a running sync
 	for {
@@ -155,7 +157,10 @@ func (c *Client) SyncInventory(id string) error {
 		attempt.Timeout = time.Until(deadline)
 		var err error
 		if attempt.Timeout > 0 {
-			err = c.do(&attempt, "GET", "/api/v1/inventories/"+id+"/sync", nil, nil, &res)
+			err = c.do(ctx, &attempt, "GET", "/api/v1/inventories/"+id+"/sync", nil, nil, &res)
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("the sync was interrupted (%w); the Control Plane may still be synchronizing the inventory", ctx.Err())
 		}
 		var netErr net.Error
 		if attempt.Timeout <= 0 || errors.As(err, &netErr) && netErr.Timeout() {
@@ -179,7 +184,11 @@ func (c *Client) SyncInventory(id string) error {
 			return errors.New(msg)
 		}
 		busy = msg
-		time.Sleep(c.syncRetry)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("the sync was interrupted (%w) while another sync of the inventory was running: %s", ctx.Err(), busy)
+		case <-time.After(c.syncRetry):
+		}
 	}
 }
 
