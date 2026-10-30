@@ -4,7 +4,11 @@
 package client
 
 import (
+	"errors"
 	"fmt"
+	"net"
+	"strings"
+	"time"
 )
 
 // The typed inventory configurations, one per provider the inventory watches.
@@ -110,11 +114,94 @@ func (c *Client) DeleteInventory(id string) error {
 }
 
 // InventorySummary is one row of the organization's inventory listing —
-// identity only, the listing carries no configuration.
+// identity only, the listing carries no configuration. LastUpdate is the time
+// of the last successful sync since the configuration last changed: a sync
+// sets it, a configuration update clears it, and the inventory read does not
+// carry it at all.
 type InventorySummary struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Type string `json:"type"`
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	Type       string  `json:"type"`
+	LastUpdate *string `json:"last_update"`
+}
+
+// SyncTimeout bounds one inventory sync, waiting for a running one
+// included. A sync of a project holding 18 resources over three regions took
+// 3.4 to 5.8 seconds; the margin is for accounts far larger than that.
+const SyncTimeout = 5 * time.Minute
+
+// syncBusy is how the server words a sync refused because another one of the
+// same inventory is running, e.g. started from the web interface.
+const syncBusy = "already in progress"
+
+// SyncInventory asks the Control Plane to discover the inventory's resources
+// and waits for the answer. The route is a GET with a side effect, and it
+// answers 200 even when the sync fails: the failure is ok false plus the
+// server's message, returned here as the error. A sync refused because
+// another one of the same inventory is running is asked again until
+// SyncTimeout has passed.
+func (c *Client) SyncInventory(id string) error {
+	deadline := time.Now().Add(c.syncHTTP.Timeout)
+	busy := "" // the server's last refusal, while waiting behind a running sync
+	for {
+		var res struct {
+			OK    bool    `json:"ok"`
+			Error *string `json:"error"`
+		}
+		// Each attempt only gets what is left, so the retries end with the
+		// deadline too. Nothing left must not read as no timeout at all,
+		// which is what a zero http.Client timeout means.
+		attempt := *c.syncHTTP
+		attempt.Timeout = time.Until(deadline)
+		var err error
+		if attempt.Timeout > 0 {
+			err = c.do(&attempt, "GET", "/api/v1/inventories/"+id+"/sync", nil, nil, &res)
+		}
+		var netErr net.Error
+		if attempt.Timeout <= 0 || errors.As(err, &netErr) && netErr.Timeout() {
+			msg := fmt.Sprintf("the sync did not answer within %s; the Control Plane may still be synchronizing the inventory", c.syncHTTP.Timeout)
+			if busy != "" {
+				msg += "; another sync of it was running: " + busy
+			}
+			return errors.New(msg)
+		}
+		if err != nil {
+			return err
+		}
+		if res.OK {
+			return nil
+		}
+		msg := "the Control Plane reported a failed sync without a message"
+		if res.Error != nil && *res.Error != "" {
+			msg = *res.Error
+		}
+		if !strings.Contains(msg, syncBusy) || time.Now().Add(c.syncRetry).After(deadline) {
+			return errors.New(msg)
+		}
+		busy = msg
+		time.Sleep(c.syncRetry)
+	}
+}
+
+// FindInventoryByID returns the inventory's row in the organization listing,
+// the only place the server reports when it last synchronized; nil when the
+// listing does not hold it.
+func (c *Client) FindInventoryByID(id string) (*InventorySummary, error) {
+	org, err := c.OrgID()
+	if err != nil {
+		return nil, err
+	}
+	items, err := paginate[InventorySummary](c,
+		"/api/v1/account/organizations/"+org+"/inventories", nil)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		if items[i].ID == id {
+			return &items[i], nil
+		}
+	}
+	return nil, nil
 }
 
 // FindInventory locates one inventory by name; nil when absent.
