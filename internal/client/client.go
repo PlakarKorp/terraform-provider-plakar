@@ -9,6 +9,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +26,14 @@ type Client struct {
 	OrganizationID string
 
 	http *http.Client
+
+	// syncHTTP carries the inventory sync alone: the route answers when the
+	// discovery is over, which takes as long as the cloud account is large,
+	// so it gets a deadline of its own instead of the 30 seconds above.
+	syncHTTP *http.Client
+	// syncRetry is the pause before asking again when another sync of the
+	// same inventory is running.
+	syncRetry time.Duration
 
 	mu     sync.Mutex
 	badges map[string]string // org key ("" = the key's own org) -> token
@@ -52,6 +61,8 @@ func New(apiURL, apiKey, organizationID string) *Client {
 		APIKey:         apiKey,
 		OrganizationID: organizationID,
 		http:           &http.Client{Timeout: 30 * time.Second},
+		syncHTTP:       &http.Client{Timeout: SyncTimeout},
+		syncRetry:      2 * time.Second,
 		badges:         map[string]string{},
 	}
 }
@@ -117,6 +128,10 @@ func (c *Client) token(refresh bool) (string, error) {
 // --- transport --------------------------------------------------------------
 
 func (c *Client) raw(method, path, token string, body, query any, out any) error {
+	return c.send(context.Background(), c.http, method, path, token, body, query, out)
+}
+
+func (c *Client) send(ctx context.Context, hc *http.Client, method, path, token string, body, query any, out any) error {
 	u := c.APIURL + path
 	if q, ok := query.(url.Values); ok && len(q) > 0 {
 		u += "?" + q.Encode()
@@ -129,7 +144,7 @@ func (c *Client) raw(method, path, token string, body, query any, out any) error
 		}
 		rdr = bytes.NewReader(buf)
 	}
-	req, err := http.NewRequest(method, u, rdr)
+	req, err := http.NewRequestWithContext(ctx, method, u, rdr)
 	if err != nil {
 		return err
 	}
@@ -137,7 +152,7 @@ func (c *Client) raw(method, path, token string, body, query any, out any) error
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := c.http.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return err
 	}
@@ -167,17 +182,21 @@ func (c *Client) raw(method, path, token string, body, query any, out any) error
 
 // Do performs an authenticated request with one transparent re-login on 401.
 func (c *Client) Do(method, path string, body any, query url.Values, out any) error {
+	return c.do(context.Background(), c.http, method, path, body, query, out)
+}
+
+func (c *Client) do(ctx context.Context, hc *http.Client, method, path string, body any, query url.Values, out any) error {
 	tok, err := c.token(false)
 	if err != nil {
 		return err
 	}
-	err = c.raw(method, path, tok, body, query, out)
+	err = c.send(ctx, hc, method, path, tok, body, query, out)
 	var apiErr *Error
 	if errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized {
 		if tok, err = c.token(true); err != nil {
 			return err
 		}
-		err = c.raw(method, path, tok, body, query, out)
+		err = c.send(ctx, hc, method, path, tok, body, query, out)
 	}
 	return err
 }

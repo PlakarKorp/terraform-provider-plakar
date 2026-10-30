@@ -6,8 +6,12 @@ package provider
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -15,7 +19,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 
 	"github.com/PlakarKorp/terraform-provider-plakar/internal/client"
 )
@@ -42,9 +48,52 @@ type inventoryOVHModel struct {
 }
 
 type inventoryScalewayModel struct {
-	ProjectID types.String `tfsdk:"project_id"`
-	AccessKey types.String `tfsdk:"access_key"`
-	SecretKey types.String `tfsdk:"secret_key"`
+	ProjectID          types.String `tfsdk:"project_id"`
+	AccessKey          types.String `tfsdk:"access_key"`
+	AccessKeySecret    types.Object `tfsdk:"access_key_secret"`
+	AccessKeyWO        types.String `tfsdk:"access_key_wo"`
+	AccessKeyWOVersion types.Int64  `tfsdk:"access_key_wo_version"`
+	SecretKey          types.String `tfsdk:"secret_key"`
+	SecretKeySecret    types.Object `tfsdk:"secret_key_secret"`
+	SecretKeyWO        types.String `tfsdk:"secret_key_wo"`
+	SecretKeyWOVersion types.Int64  `tfsdk:"secret_key_wo_version"`
+}
+
+func (m *inventoryScalewayModel) accessKey() credential {
+	return credential{&m.AccessKey, &m.AccessKeySecret, &m.AccessKeyWO, &m.AccessKeyWOVersion}
+}
+
+func (m *inventoryScalewayModel) secretKey() credential {
+	return credential{&m.SecretKey, &m.SecretKeySecret, &m.SecretKeyWO, &m.SecretKeyWOVersion}
+}
+
+// loadWriteOnly copies the write-only credentials from the configuration into
+// the model: the plan never carries them.
+func (m *inventoryModel) loadWriteOnly(ctx context.Context, config tfsdk.Config, diags *diag.Diagnostics) {
+	if m.Scaleway != nil {
+		diags.Append(config.GetAttribute(ctx, path.Root("scaleway").AtName("access_key_wo"), &m.Scaleway.AccessKeyWO)...)
+		diags.Append(config.GetAttribute(ctx, path.Root("scaleway").AtName("secret_key_wo"), &m.Scaleway.SecretKeyWO)...)
+	}
+}
+
+// clearWriteOnly empties the write-only credentials before the model is
+// written to state.
+func (m *inventoryModel) clearWriteOnly() {
+	if m.Scaleway != nil {
+		m.Scaleway.AccessKeyWO = types.StringNull()
+		m.Scaleway.SecretKeyWO = types.StringNull()
+	}
+}
+
+// newInventoryScalewayModel is an empty block whose object and number
+// attributes carry their types, as state requires even of nulls.
+func newInventoryScalewayModel() *inventoryScalewayModel {
+	return &inventoryScalewayModel{
+		AccessKeySecret: types.ObjectNull(secretFieldAttrTypes), AccessKeyWO: types.StringNull(),
+		AccessKeyWOVersion: types.Int64Null(),
+		SecretKeySecret:    types.ObjectNull(secretFieldAttrTypes), SecretKeyWO: types.StringNull(),
+		SecretKeyWOVersion: types.Int64Null(),
+	}
 }
 
 type inventoryGCPModel struct {
@@ -65,16 +114,23 @@ type inventoryK8SModel struct {
 }
 
 type inventoryModel struct {
-	ID       types.String            `tfsdk:"id"`
-	Name     types.String            `tfsdk:"name"`
-	Type     types.String            `tfsdk:"type"`
-	AWS      *inventoryAWSModel      `tfsdk:"aws"`
-	OVH      *inventoryOVHModel      `tfsdk:"ovh"`
-	Scaleway *inventoryScalewayModel `tfsdk:"scaleway"`
-	GCP      *inventoryGCPModel      `tfsdk:"gcp"`
-	VMWare   *inventoryVMWareModel   `tfsdk:"vmware"`
-	K8S      *inventoryK8SModel      `tfsdk:"k8s"`
+	ID           types.String            `tfsdk:"id"`
+	Name         types.String            `tfsdk:"name"`
+	Type         types.String            `tfsdk:"type"`
+	Sync         types.Bool              `tfsdk:"sync"`
+	SyncTriggers types.Map               `tfsdk:"sync_triggers"`
+	LastSyncedAt types.String            `tfsdk:"last_synced_at"`
+	AWS          *inventoryAWSModel      `tfsdk:"aws"`
+	OVH          *inventoryOVHModel      `tfsdk:"ovh"`
+	Scaleway     *inventoryScalewayModel `tfsdk:"scaleway"`
+	GCP          *inventoryGCPModel      `tfsdk:"gcp"`
+	VMWare       *inventoryVMWareModel   `tfsdk:"vmware"`
+	K8S          *inventoryK8SModel      `tfsdk:"k8s"`
 }
+
+// syncAttributes steer the sync and report on it; they are not part of the
+// configuration the server holds, so a change to them alone sends none.
+var syncAttributes = []string{"sync", "sync_triggers", "last_synced_at"}
 
 func NewInventoryResource() resource.Resource {
 	return &inventoryResource{}
@@ -111,6 +167,46 @@ func (r *inventoryResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
+			},
+			"sync": schema.BoolAttribute{
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+				Description: "Synchronize the inventory each time Terraform writes it: " +
+					"after it is created, after any change to its configuration, and " +
+					"when this attribute turns true. A sync discovers the resources " +
+					"of the account, adds the new ones and drops those that no longer " +
+					"exist; it is also when the Control Plane first uses the " +
+					"credentials, so a failed sync fails the apply with the server's " +
+					"reason. Nothing is synchronized when the configuration does not " +
+					"change, and a self-managed inventory, having nothing to " +
+					"discover, refuses it. A failed sync at creation leaves the " +
+					"inventory in state, tainted: the next apply replaces it, or " +
+					"`terraform untaint` then a change to sync_triggers synchronizes " +
+					"it again as is. A failed sync at update keeps the new " +
+					"configuration in state but records sync as false and " +
+					"sync_triggers as they were, so the next plan shows sync turning " +
+					"true and the next apply tries again by itself, without sending " +
+					"the configuration. The " +
+					"provider waits up to five minutes for a sync, and for one " +
+					"already running, e.g. started from the web interface. Defaults " +
+					"to false.",
+			},
+			"sync_triggers": schema.MapAttribute{
+				ElementType: types.StringType,
+				Optional:    true,
+				Description: "Arbitrary values whose change synchronizes the inventory " +
+					"again without sending its configuration, e.g. to retry after a " +
+					"failed sync. Only acts when sync is true, so never on a " +
+					"self-managed inventory. Stored in state as written: keep " +
+					"secrets out.",
+			},
+			"last_synced_at": schema.StringAttribute{
+				Computed: true,
+				Description: "When the Control Plane last synchronized the inventory " +
+					"successfully, from Terraform or from the web interface, since " +
+					"its configuration last changed (RFC 3339). Null when it has not: " +
+					"a change to the configuration clears it.",
 			},
 		},
 		Blocks: map[string]schema.Block{
@@ -153,12 +249,14 @@ func (r *inventoryResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				},
 			},
 			"scaleway": schema.SingleNestedBlock{
-				Description: "Configuration of a scaleway inventory.",
-				Attributes: map[string]schema.Attribute{
-					"project_id": schema.StringAttribute{Optional: true},
-					"access_key": schema.StringAttribute{Optional: true, Sensitive: true},
-					"secret_key": schema.StringAttribute{Optional: true, Sensitive: true},
-				},
+				Description: "Configuration of a scaleway inventory. Each credential " +
+					"can be given plainly, as a reference to a secret provider " +
+					"(<name>_secret), or write-only (<name>_wo).",
+				Attributes: mergeAttributes(
+					map[string]schema.Attribute{"project_id": schema.StringAttribute{Optional: true}},
+					credentialAttributes("access_key", "Scaleway access key."),
+					credentialAttributes("secret_key", "Scaleway secret key."),
+				),
 			},
 			"gcp": schema.SingleNestedBlock{
 				Description: "Configuration of a gcp inventory.",
@@ -235,6 +333,12 @@ func (r *inventoryResource) ValidateConfig(ctx context.Context, req resource.Val
 	if typ == "" { // unknown during validation, e.g. computed from elsewhere
 		return
 	}
+	if typ == "self-managed" && config.Sync.ValueBool() {
+		resp.Diagnostics.AddAttributeError(path.Root("sync"),
+			"nothing to synchronize",
+			"a self-managed inventory holds resources declared by hand and has nothing to "+
+				"discover; remove sync or set it to false")
+	}
 	// A self-managed inventory has no block of its own, so the mismatch case
 	// below already covers every stray block under it.
 	for name, set := range blocks {
@@ -289,9 +393,9 @@ func (r *inventoryResource) ValidateConfig(ctx context.Context, req resource.Val
 	case "scaleway":
 		require("scaleway", map[string]types.String{
 			"project_id": config.Scaleway.ProjectID,
-			"access_key": config.Scaleway.AccessKey,
-			"secret_key": config.Scaleway.SecretKey,
 		})
+		config.Scaleway.accessKey().validate("scaleway", "access_key", true, &resp.Diagnostics)
+		config.Scaleway.secretKey().validate("scaleway", "secret_key", true, &resp.Diagnostics)
 	case "gcp":
 		require("gcp", map[string]types.String{
 			"project_id": config.GCP.ProjectID,
@@ -310,7 +414,169 @@ func field(v types.String) client.Field {
 	return client.Field{Value: v.ValueString()}
 }
 
-func (m *inventoryModel) toRequest() *client.InventoryRequest {
+// credential is one sensitive inventory attribute, in the three forms a
+// configuration can give it: a plain value, which lands in state; a reference
+// to a secret provider (<attr>_secret), resolved by Plakar at run time; or a
+// write-only value (<attr>_wo), which Plakar holds and state never does.
+type credential struct {
+	Plain     *types.String
+	Ref       *types.Object
+	WO        *types.String
+	WOVersion *types.Int64
+}
+
+// mergeAttributes joins attribute maps into one block's attributes.
+func mergeAttributes(maps ...map[string]schema.Attribute) map[string]schema.Attribute {
+	out := map[string]schema.Attribute{}
+	for _, m := range maps {
+		for k, v := range m {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// credentialAttributes is the schema of one credential in its three forms.
+func credentialAttributes(name, description string) map[string]schema.Attribute {
+	return map[string]schema.Attribute{
+		name: schema.StringAttribute{
+			Optional:    true,
+			Sensitive:   true,
+			Description: description + " Lands in state; see " + name + "_secret and " + name + "_wo.",
+		},
+		name + "_secret": schema.SingleNestedAttribute{
+			Optional: true,
+			Description: "Resolve " + name + " from a secret provider each time " +
+				"Plakar needs it: only the path is stored.",
+			Attributes: map[string]schema.Attribute{
+				"provider": schema.StringAttribute{
+					Required:    true,
+					Description: "Id of the plakar_secret_provider holding the secret.",
+				},
+				"path": schema.StringAttribute{
+					Required: true,
+					Description: "Where the secret lives in the provider. For Vault: " +
+						"{secret_engine}/{path}#{field}. For Scaleway Secret Manager: " +
+						"{secret_id}#{key}, the secret's value being a JSON object that " +
+						"holds key.",
+				},
+			},
+		},
+		name + "_wo": schema.StringAttribute{
+			Optional:  true,
+			WriteOnly: true,
+			Sensitive: true,
+			Description: "Write-only " + name + ": Plakar holds it, state never " +
+				"does. Requires Terraform 1.11 or later. Sent at creation, when " +
+				name + "_wo_version changes, and when it replaces another form.",
+		},
+		name + "_wo_version": schema.Int64Attribute{
+			Optional:    true,
+			Description: "Change this to send " + name + "_wo again.",
+		},
+	}
+}
+
+// forms counts the forms the configuration sets, an unknown one included.
+func (c credential) forms() int {
+	n := 0
+	if !c.Plain.IsNull() {
+		n++
+	}
+	if !c.Ref.IsNull() {
+		n++
+	}
+	if !c.WO.IsNull() {
+		n++
+	}
+	return n
+}
+
+// validate reports a credential set in more than one form, a reference with
+// an empty path or provider, and, when required, one set in none.
+func (c credential) validate(block, name string, required bool, diags *diag.Diagnostics) {
+	at := path.Root(block).AtName(name)
+	switch n := c.forms(); {
+	case n > 1:
+		diags.AddAttributeError(at, "credential set twice",
+			fmt.Sprintf("set one of %s.%s, %s.%s_secret and %s.%s_wo.", block, name, block, name, block, name))
+	case n == 0 && required:
+		diags.AddAttributeError(at, "missing required field",
+			fmt.Sprintf("a %s inventory needs %s.%s, %s.%s_secret or %s.%s_wo", block, block, name, block, name, block, name))
+	}
+	if c.Ref.IsNull() || c.Ref.IsUnknown() {
+		return
+	}
+	for _, attrName := range []string{"provider", "path"} {
+		v, ok := c.Ref.Attributes()[attrName].(types.String)
+		if ok && !v.IsUnknown() && !v.IsNull() && strings.TrimSpace(v.ValueString()) == "" {
+			diags.AddAttributeError(path.Root(block).AtName(name+"_secret").AtName(attrName),
+				"empty secret field "+attrName,
+				fmt.Sprintf("%s.%s_secret needs a non-empty %s.", block, name, attrName))
+		}
+	}
+}
+
+// wire builds the field a request sends. The inventory update is a full-body
+// POST that replaces the configuration, so a write-only value that is not
+// sent this time goes out as the server's current field instead of empty: it
+// is sent at creation (prior is nil), when its version moved, when the prior
+// state held the credential in another form, and when the server holds a
+// reference that the configuration no longer has.
+func (c credential) wire(prior *credential, current client.Field) client.Field {
+	switch {
+	case !c.Plain.IsNull():
+		return client.Field{Value: c.Plain.ValueString()}
+	case !c.Ref.IsNull():
+		provider, _ := c.Ref.Attributes()["provider"].(types.String)
+		ref, _ := c.Ref.Attributes()["path"].(types.String)
+		return client.Field{Value: ref.ValueString(), Provider: &client.FieldProvider{ID: provider.ValueString()}}
+	case !c.WO.IsNull():
+		if prior == nil || !c.WOVersion.Equal(*prior.WOVersion) ||
+			!prior.Plain.IsNull() || !prior.Ref.IsNull() || current.Provider != nil {
+			return client.Field{Value: c.WO.ValueString()}
+		}
+		return current
+	default:
+		return client.Field{}
+	}
+}
+
+// refresh folds the server's field back into the form the configuration
+// uses, never putting a plain secret anywhere the configuration did not put
+// it. A reference the configuration holds as a plain value refreshes to its
+// path, and a plain value it holds as a reference to an empty reference, so
+// the plan shows either change. A plain value is only adopted into an
+// attribute already holding one: after an import, a write-only or unset
+// credential stays server-side.
+func (c credential) refresh(server client.Field) {
+	*c.WO = types.StringNull()
+	if server.Provider != nil {
+		if !c.Plain.IsNull() {
+			*c.Plain = types.StringValue(server.Value)
+			return
+		}
+		*c.Ref = types.ObjectValueMust(secretFieldAttrTypes, map[string]attr.Value{
+			"provider": types.StringValue(server.Provider.ID),
+			"path":     types.StringValue(server.Value),
+		})
+		return
+	}
+	switch {
+	case !c.Plain.IsNull():
+		*c.Plain = stringOrNull(server.Value, *c.Plain)
+	case !c.Ref.IsNull():
+		*c.Ref = types.ObjectValueMust(secretFieldAttrTypes, map[string]attr.Value{
+			"provider": types.StringValue(""),
+			"path":     types.StringValue(""),
+		})
+	}
+}
+
+// toRequest builds the create body, and the update body when prior (the
+// state) and current (the server's inventory) are given: write-only values
+// that are not sent again go out as the server's current field.
+func (m *inventoryModel) toRequest(prior *inventoryModel, current *client.Inventory) *client.InventoryRequest {
 	req := &client.InventoryRequest{
 		Name: m.Name.ValueString(),
 		Type: m.Type.ValueString(),
@@ -331,10 +597,19 @@ func (m *inventoryModel) toRequest() *client.InventoryRequest {
 			Endpoint:          m.OVH.Endpoint.ValueString(),
 		}
 	case m.Scaleway != nil:
+		var priorAccess, priorSecret *credential
+		var currentAccess, currentSecret client.Field
+		if prior != nil && prior.Scaleway != nil {
+			a, s := prior.Scaleway.accessKey(), prior.Scaleway.secretKey()
+			priorAccess, priorSecret = &a, &s
+		}
+		if current != nil && current.Scaleway != nil {
+			currentAccess, currentSecret = current.Scaleway.AccessKey, current.Scaleway.SecretKey
+		}
 		req.Scaleway = &client.ScalewayInventoryConfig{
 			ProjectID: field(m.Scaleway.ProjectID),
-			AccessKey: field(m.Scaleway.AccessKey),
-			SecretKey: field(m.Scaleway.SecretKey),
+			AccessKey: m.Scaleway.accessKey().wire(priorAccess, currentAccess),
+			SecretKey: m.Scaleway.secretKey().wire(priorSecret, currentSecret),
 		}
 	case m.GCP != nil:
 		req.GCP = &client.GCPInventoryConfig{
@@ -387,11 +662,11 @@ func (m *inventoryModel) refreshFromInventory(inv *client.Inventory) {
 		m.OVH.Endpoint = stringOrNull(inv.OVH.Endpoint, m.OVH.Endpoint)
 	case inv.Scaleway != nil:
 		if m.Scaleway == nil {
-			m.Scaleway = &inventoryScalewayModel{}
+			m.Scaleway = newInventoryScalewayModel()
 		}
 		m.Scaleway.ProjectID = stringOrNull(inv.Scaleway.ProjectID.Value, m.Scaleway.ProjectID)
-		m.Scaleway.AccessKey = stringOrNull(inv.Scaleway.AccessKey.Value, m.Scaleway.AccessKey)
-		m.Scaleway.SecretKey = stringOrNull(inv.Scaleway.SecretKey.Value, m.Scaleway.SecretKey)
+		m.Scaleway.accessKey().refresh(inv.Scaleway.AccessKey)
+		m.Scaleway.secretKey().refresh(inv.Scaleway.SecretKey)
 	case inv.GCP != nil:
 		if m.GCP == nil {
 			m.GCP = &inventoryGCPModel{}
@@ -422,7 +697,12 @@ func (r *inventoryResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
-	created, err := r.client.CreateInventory(plan.toRequest())
+	plan.loadWriteOnly(ctx, req.Config, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	created, err := r.client.CreateInventory(plan.toRequest(nil, nil))
+	plan.clearWriteOnly()
 	if err != nil {
 		resp.Diagnostics.AddError("creating inventory", err.Error())
 		return
@@ -432,20 +712,77 @@ func (r *inventoryResource) Create(ctx context.Context, req resource.CreateReque
 	// transient failure there cannot orphan it and duplicate it on the next
 	// apply.
 	plan.ID = types.StringValue(created.ID)
+	plan.LastSyncedAt = types.StringNull()
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
+	var syncErr error
+	if plan.Sync.ValueBool() {
+		syncErr = r.client.SyncInventory(ctx, created.ID)
+	}
+
 	// Read back rather than trusting the plan, the same as every resource
 	// here: state carries what the server holds.
-	inv, err := r.client.GetInventory(created.ID)
-	if err != nil {
-		resp.Diagnostics.AddError("reading inventory after create", err.Error())
+	if !r.readBack(ctx, &plan, "after create", &resp.State, &resp.Diagnostics) {
 		return
 	}
-	plan.refreshFromInventory(inv)
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if syncErr != nil {
+		resp.Diagnostics.AddError("synchronizing inventory",
+			"the inventory was created but did not synchronize: "+syncErr.Error())
+	}
+}
+
+// readBack folds the server's inventory and its last sync into the model and
+// writes it to state.
+func (r *inventoryResource) readBack(ctx context.Context, m *inventoryModel, when string, state *tfsdk.State, diags *diag.Diagnostics) bool {
+	inv, err := r.client.GetInventory(m.ID.ValueString())
+	if err != nil {
+		diags.AddError("reading inventory "+when, err.Error())
+		return false
+	}
+	m.refreshFromInventory(inv)
+	r.refreshLastSync(m, diags)
+	diags.Append(state.Set(ctx, m)...)
+	return !diags.HasError()
+}
+
+// refreshLastSync reads when the inventory last synchronized, which only the
+// organization listing reports. The listing failing is no reason to fail a
+// plan or an apply over an inventory that is fine: the value already held
+// stays, with a warning.
+func (r *inventoryResource) refreshLastSync(m *inventoryModel, diags *diag.Diagnostics) {
+	row, err := r.client.FindInventoryByID(m.ID.ValueString())
+	if err != nil {
+		diags.AddWarning("last_synced_at not refreshed",
+			"reading the organization's inventory listing failed: "+err.Error())
+		return
+	}
+	m.LastSyncedAt = types.StringNull()
+	if row != nil && row.LastUpdate != nil {
+		m.LastSyncedAt = types.StringValue(*row.LastUpdate)
+	}
+}
+
+// configurationChanged reports whether the plan differs from the state in
+// anything the server holds, that is in anything but the sync attributes.
+func configurationChanged(plan tfsdk.Plan, state tfsdk.State) (bool, error) {
+	var p, s map[string]tftypes.Value
+	if err := plan.Raw.As(&p); err != nil {
+		return false, err
+	}
+	if err := state.Raw.As(&s); err != nil {
+		return false, err
+	}
+	// The maps are the values' own: skip the sync attributes, never delete
+	// them.
+	for name, v := range p {
+		if !slices.Contains(syncAttributes, name) && !v.Equal(s[name]) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (r *inventoryResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -466,6 +803,12 @@ func (r *inventoryResource) Read(ctx context.Context, req resource.ReadRequest, 
 	}
 
 	state.refreshFromInventory(inv)
+	r.refreshLastSync(&state, &resp.Diagnostics)
+	// A state written before sync existed, or imported, holds it null: read
+	// it as its default, false, so the plan stays empty.
+	if state.Sync.IsNull() {
+		state.Sync = types.BoolValue(false)
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -477,18 +820,74 @@ func (r *inventoryResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	if err := r.client.UpdateInventory(state.ID.ValueString(), plan.toRequest()); err != nil {
-		resp.Diagnostics.AddError("updating inventory", err.Error())
+	changed, err := configurationChanged(req.Plan, req.State)
+	if err != nil {
+		resp.Diagnostics.AddError("comparing plan and state", err.Error())
 		return
+	}
+	// A sync follows a change of the configuration, sync turning true, or a
+	// change of sync_triggers; none of them without sync.
+	sync := plan.Sync.ValueBool() && (changed || !state.Sync.ValueBool() ||
+		!plan.SyncTriggers.Equal(state.SyncTriggers))
+
+	// Until the read-back says otherwise: a configuration change clears the
+	// last sync server-side, nothing else touches it.
+	plan.LastSyncedAt = state.LastSyncedAt
+	if changed {
+		plan.LastSyncedAt = types.StringNull()
+	}
+	if !changed && !sync {
+		// Only the sync attributes moved, to no effect on the server.
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		return
+	}
+	// Otherwise state is written once the server holds what the plan says:
+	// until then a failure leaves the prior state, so a write-only rotation
+	// whose request failed is sent again by the next apply.
+
+	if changed {
+		// The update replaces the whole configuration: a write-only credential
+		// that is not sent again has to go out as the one the server holds.
+		current, err := r.client.GetInventory(state.ID.ValueString())
+		if err != nil {
+			resp.Diagnostics.AddError("reading inventory before update", err.Error())
+			return
+		}
+		plan.loadWriteOnly(ctx, req.Config, &resp.Diagnostics)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		ireq := plan.toRequest(&state, current)
+		plan.clearWriteOnly()
+		if err := r.client.UpdateInventory(state.ID.ValueString(), ireq); err != nil {
+			resp.Diagnostics.AddError("updating inventory", err.Error())
+			return
+		}
 	}
 
-	inv, err := r.client.GetInventory(state.ID.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("reading inventory after update", err.Error())
+	var syncErr error
+	if sync {
+		syncErr = r.client.SyncInventory(ctx, state.ID.ValueString())
+	}
+	if syncErr != nil {
+		// The server holds the new configuration, so state does too; but it
+		// must not say the inventory is synchronized. sync recorded false,
+		// and sync_triggers as they were, leave a diff for the next plan,
+		// whose apply synchronizes without sending the configuration again.
+		plan.Sync = types.BoolValue(false)
+		plan.SyncTriggers = state.SyncTriggers
+	}
+	if !r.readBack(ctx, &plan, "after update", &resp.State, &resp.Diagnostics) {
 		return
 	}
-	plan.refreshFromInventory(inv)
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if syncErr != nil {
+		what := "the inventory did not synchronize: "
+		if changed {
+			what = "the inventory was updated but did not synchronize: "
+		}
+		resp.Diagnostics.AddError("synchronizing inventory",
+			what+syncErr.Error()+"; the next apply tries again")
+	}
 }
 
 func (r *inventoryResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
