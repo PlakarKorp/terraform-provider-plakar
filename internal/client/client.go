@@ -207,31 +207,6 @@ func (c *Client) OrgID() (string, error) {
 	return me.OrganizationID, nil
 }
 
-// Integration is the slice of the installed-integration record we need.
-type Integration struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-}
-
-func (c *Client) IntegrationByName(name string) (*Integration, error) {
-	var res struct {
-		Items []Integration `json:"items"`
-	}
-	if err := c.Do("GET", "/api/v1/integrations/installed", nil, nil, &res); err != nil {
-		return nil, err
-	}
-	for i := range res.Items {
-		if res.Items[i].Name == name {
-			return &res.Items[i], nil
-		}
-	}
-	names := make([]string, 0, len(res.Items))
-	for _, it := range res.Items {
-		names = append(names, it.Name)
-	}
-	return nil, fmt.Errorf("no installed integration named %q — installed: %v", name, names)
-}
-
 // Resource is the slice of an inventory resource we need.
 type Resource struct {
 	URNID string `json:"urn_id"`
