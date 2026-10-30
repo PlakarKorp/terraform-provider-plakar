@@ -101,19 +101,24 @@ func (r *connectorResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				},
 			},
 			"resource": schema.StringAttribute{
-				Required: true,
-				Description: "URN or name of the inventory resource the connector attaches to. " +
-					"Terraform sees no link between this string and the inventory: for a " +
-					"resource that a plakar_inventory with sync = true discovers in the same " +
-					"apply, add depends_on = [plakar_inventory.<name>], or the connector may " +
-					"be created before the sync and not find its resource.",
+				Optional: true,
+				Description: "URN or name of the inventory resource the connector attaches to; " +
+					"required to create one. Terraform sees no link between this string and " +
+					"the inventory: for a resource that a plakar_inventory with sync = true " +
+					"discovers in the same apply, add depends_on = [plakar_inventory.<name>], " +
+					"or the connector may be created before the sync and not find its " +
+					"resource. A connector whose resource was deleted afterwards, by hand or " +
+					"by a sync after it disappeared from the cloud, is left without one: it " +
+					"imports with resource unset, and the Control Plane refuses any change " +
+					"to it. Setting resource to an existing resource replaces it; otherwise " +
+					"remove it. resource cannot be unset on a connector that has one.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
 			"urn_id": schema.StringAttribute{
 				Computed:      true,
-				Description:   "Resolved id of the inventory resource.",
+				Description:   "Resolved id of the inventory resource; null once it no longer exists.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"fields": schema.MapAttribute{
@@ -160,6 +165,45 @@ func (r *connectorResource) Configure(_ context.Context, req resource.ConfigureR
 		return
 	}
 	r.client = c
+}
+
+// ModifyPlan holds a connector to what the Control Plane accepts: every
+// connector write carries an inventory resource (urn_id), so a connector is
+// created with one, keeps one, and, once its resource is gone, takes no
+// change but a new resource, which replaces it.
+func (r *connectorResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return // destroy
+	}
+	var plan connectorModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if req.State.Raw.IsNull() {
+		if plan.Resource.IsNull() {
+			resp.Diagnostics.AddAttributeError(path.Root("resource"), "missing resource",
+				"a connector is created on an inventory resource: set resource to its URN or name")
+		}
+		return
+	}
+	var state connectorModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() || plan.Resource.IsUnknown() {
+		return
+	}
+	switch {
+	case !state.Resource.IsNull() && plan.Resource.IsNull():
+		resp.Diagnostics.AddAttributeError(path.Root("resource"), "resource cannot be unset",
+			"the Control Plane keeps a connector on an inventory resource: set resource to "+
+				"another one, which replaces the connector, or remove the connector")
+	case state.URNID.IsNull() && plan.Resource.Equal(state.Resource) && !req.Plan.Raw.Equal(req.State.Raw):
+		resp.Diagnostics.AddAttributeError(path.Root("resource"), "connector without inventory resource",
+			fmt.Sprintf("the inventory resource of connector %q no longer exists, and the Control "+
+				"Plane refuses any change to a connector without one: set resource to an "+
+				"existing resource, which replaces the connector, or remove the connector",
+				state.Name.ValueString()))
+	}
 }
 
 // ValidateConfig refuses a field set both as a value and as a reference, and a
@@ -269,6 +313,17 @@ func (r *connectorResource) Read(ctx context.Context, req resource.ReadRequest, 
 		}
 	}
 	refreshFacetFromConnector(ctx, state.facet(), conn, sensitive, &resp.Diagnostics)
+	if conn.Resource == nil {
+		// Its resource was deleted, or pruned by a sync: the connector now
+		// takes no change but a new resource (see ModifyPlan).
+		state.URNID = types.StringNull()
+		if !state.Resource.IsNull() {
+			resp.Diagnostics.AddWarning("connector without inventory resource",
+				fmt.Sprintf("the inventory resource %q of connector %q no longer exists; the "+
+					"Control Plane refuses any change to the connector until it gets an "+
+					"existing one", state.Resource.ValueString(), conn.Name))
+		}
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 

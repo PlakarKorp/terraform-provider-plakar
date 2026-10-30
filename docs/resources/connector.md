@@ -127,7 +127,6 @@ resource "plakar_connector" "discovered_bucket" {
 - `fields` (Map of String, Sensitive) Integration-specific configuration. Only the keys declared here are managed; anything else set server-side keeps its value. An import adopts only the keys the integration does not mark sensitive; declare the others again, in any form.
 - `integration` (String) Name of the installed integration backing the connector, e.g. s3 or sftp.
 - `name` (String) Name of the connector, unique per connector type in the organization.
-- `resource` (String) URN or name of the inventory resource the connector attaches to. Terraform sees no link between this string and the inventory: for a resource that a plakar_inventory with sync = true discovers in the same apply, add depends_on = [plakar_inventory.<name>], or the connector may be created before the sync and not find its resource.
 - `type` (String) What the connector is used for: source or destination.
 
 ### Optional
@@ -139,13 +138,14 @@ resource "plakar_connector" "discovered_bucket" {
 - `fields_wo` (Map of String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Integration-specific configuration that never lands in state, e.g. secret_access_key. Requires Terraform 1.11 or later. Its values are sent at creation, when fields_wo_version changes, and for a key that has just moved here from another form: Terraform cannot compare a write-only value with anything, so the version is what rotates it. A key may be set in one form only. A key removed from fields_wo keeps its server-side value, as for fields. An import cannot recover it: after one, keep fields_wo in the configuration and bump fields_wo_version to send it again.
 - `fields_wo_version` (Number) Change this to send fields_wo again, for instance after rotating a credential it carries.
 - `protocol` (String) Protocol spoken to the resource. Defaults to the integration name, which matches for the standard integrations.
+- `resource` (String) URN or name of the inventory resource the connector attaches to; required to create one. Terraform sees no link between this string and the inventory: for a resource that a plakar_inventory with sync = true discovers in the same apply, add depends_on = [plakar_inventory.<name>], or the connector may be created before the sync and not find its resource. A connector whose resource was deleted afterwards, by hand or by a sync after it disappeared from the cloud, is left without one: it imports with resource unset, and the Control Plane refuses any change to it. Setting resource to an existing resource replaces it; otherwise remove it. resource cannot be unset on a connector that has one.
 - `secret_fields` (Attributes Map) Fields resolved from a secret provider each time Plakar needs them, instead of being stored: Plakar and Terraform state only hold the path. Keyed like fields; a key may not appear in both. (see [below for nested schema](#nestedatt--secret_fields))
 - `temperature` (String) Storage temperature. Computed by the server when not set.
 
 ### Read-Only
 
 - `id` (String) The ID of this resource.
-- `urn_id` (String) Resolved id of the inventory resource.
+- `urn_id` (String) Resolved id of the inventory resource; null once it no longer exists.
 
 <a id="nestedatt--secret_fields"></a>
 ### Nested Schema for `secret_fields`
