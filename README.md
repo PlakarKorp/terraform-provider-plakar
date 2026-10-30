@@ -78,12 +78,14 @@ resource "plakar_schedule" "retention" {
 | `plakar_organization` (resource) | A tenant, or a perimeter nested under one — destroying it deletes the tenant |
 | `plakar_member` (resource) | A person or service account belonging to an organization; carries no permission |
 | `plakar_grant` (resource) | A role held by a member — one (subject, role) pair |
+| `plakar_secret_provider` (resource) | A secret manager (Vault, a cloud secret manager) credentials are resolved from at run time; its own credential is write-only |
 | `plakar_store` / `plakar_connector` (data) | Look up existing stores and connectors by name — identity only, no credentials |
 | `plakar_inventory` (data) | An inventory, by name — identity only |
 | `plakar_organization` (data) | An organization, by name across the provider organization's subtree |
 | `plakar_member` (data) | A member, by email (a person) or name (a service account) |
 | `plakar_resource` (data) | An inventory resource, by URN or name |
 | `plakar_integration` (data) | An installed integration, by name |
+| `plakar_secret_provider` (data) | A secret provider, by name; identity only, no credentials |
 
 All resources import by their id: `terraform import plakar_store.offsite <uuid>`
 (`plakar_inventory_resource` by `<inventory_id>/<urn_id>`).
@@ -170,6 +172,13 @@ The provider authenticates with an API key belonging to a service account
 (`pcp_ak_...`). The key is bound to one organization; `organization_id`
 re-scopes when the account is a member of another. Connector fields are
 sensitive and land in Terraform state — treat state accordingly.
+To keep a secret out of both Plakar and state, put it in a
+`plakar_secret_provider` and point at it from `secret_fields`: only the path
+is stored, and Plakar resolves the value each time it needs it.
+Or pass it in `fields_wo`, which Terraform 1.11 and later never write to
+state: Plakar keeps the value, and bumping `fields_wo_version` sends a new
+one. Feed write-only values from `ephemeral` variables, or the plan file
+records them.
 
 Destroying a `plakar_store` removes the store from Plakar; data in the
 underlying storage is not touched.
