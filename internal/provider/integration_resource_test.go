@@ -36,6 +36,7 @@ func TestAccIntegration_lifecycle(t *testing.T) {
 	testAccPreCheck(t)
 	pinned := "etcd"
 	listed := []string{"ftp", "imap", "webdav"}
+	var before []client.InstalledIntegration
 	config := func(names []string) string {
 		hcl := fmt.Sprintf(`
 resource "plakar_integration" "pinned" {
@@ -54,9 +55,12 @@ resource "plakar_integration" %q {
 	}
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testAccInstalledIntegrations(t, &before)
+		},
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
-		CheckDestroy:             testAccCheckIntegrationsUninstalled(append(listed, pinned)...),
+		CheckDestroy:             testAccCheckIntegrationsUninstalled(&before, append(listed, pinned)...),
 		Steps: []resource.TestStep{
 			{
 				Config: config(listed),
@@ -91,7 +95,7 @@ resource "plakar_integration" %q {
 							plancheck.ResourceActionNoop),
 					},
 				},
-				Check: testAccCheckIntegrationsUninstalled("imap"),
+				Check: testAccCheckIntegrationsUninstalled(&before, "imap"),
 			},
 			{
 				// Uninstalled by hand: the next plan installs it again.
@@ -128,10 +132,14 @@ resource "plakar_integration" %q {
 // value; the server alone would answer a bare 500.
 func TestAccIntegration_unknown(t *testing.T) {
 	name := "plakar-acc-" + acctest.RandString(8)
+	var before []client.InstalledIntegration
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testAccInstalledIntegrations(t, &before)
+		},
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
-		CheckDestroy:             testAccCheckIntegrationsUninstalled("smb"),
+		CheckDestroy:             testAccCheckIntegrationsUninstalled(&before, "smb"),
 		Steps: []resource.TestStep{
 			{
 				Config: fmt.Sprintf(`
@@ -192,12 +200,27 @@ func testAccCheckIntegrationCurrent(address string) resource.TestCheckFunc {
 	}
 }
 
+// testAccInstalledIntegrations records, into before, the integrations
+// installed when the test starts, whatever the deployment: the reference
+// the test must leave untouched.
+func testAccInstalledIntegrations(t *testing.T, before *[]client.InstalledIntegration) {
+	t.Helper()
+	installed, err := testAccClient().InstalledIntegrations("")
+	if err != nil {
+		t.Fatalf("listing installed integrations: %v", err)
+	}
+	*before = installed
+}
+
 // testAccCheckIntegrationsUninstalled checks none of the names is installed,
-// and that the integrations the deployment depends on are as they were.
-func testAccCheckIntegrationsUninstalled(names ...string) resource.TestCheckFunc {
+// and that every integration installed before the test, but those names, is
+// still installed, with the same current version.
+func testAccCheckIntegrationsUninstalled(before *[]client.InstalledIntegration, names ...string) resource.TestCheckFunc {
 	return func(*terraform.State) error {
 		c := testAccClient()
+		tested := map[string]bool{}
 		for _, name := range names {
+			tested[name] = true
 			installed, err := c.InstalledIntegrations(name)
 			if err != nil {
 				return err
@@ -206,9 +229,17 @@ func testAccCheckIntegrationsUninstalled(names ...string) resource.TestCheckFunc
 				return fmt.Errorf("%s is still installed", name)
 			}
 		}
-		for _, name := range []string{"s3", "scaleway", "vault"} {
-			if _, err := c.IntegrationByName(name); err != nil {
-				return fmt.Errorf("an integration the tests must not touch is gone: %w", err)
+		after, err := c.InstalledIntegrations("")
+		if err != nil {
+			return err
+		}
+		now := map[string]bool{}
+		for _, it := range after {
+			now[it.ID+"/"+fmt.Sprint(it.IsCurrent)] = true
+		}
+		for _, it := range *before {
+			if !tested[it.Name] && !now[it.ID+"/"+fmt.Sprint(it.IsCurrent)] {
+				return fmt.Errorf("an integration the test must not touch changed: %s %s (current %t)", it.Name, it.Version, it.IsCurrent)
 			}
 		}
 		return nil

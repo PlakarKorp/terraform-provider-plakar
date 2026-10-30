@@ -50,8 +50,10 @@ func (r *integrationResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"version of its name. Integrations belong to the whole deployment, " +
 			"not to an organization: managing them needs an API key whose " +
 			"service account holds the platform-admin role, and destroying the " +
-			"resource uninstalls the integration for every organization, " +
-			"including one imported rather than installed by Terraform. The " +
+			"resource uninstalls the version in state for every organization, " +
+			"including one imported rather than installed by Terraform; other " +
+			"installed versions of the same integration, such as the one a " +
+			"version change left behind, stay installed. The " +
 			"server uninstalls an integration a connector still uses without " +
 			"complaint, and leaves the connector in " +
 			"place; within one configuration, Terraform destroys those first. " +
@@ -59,9 +61,7 @@ func (r *integrationResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"version installs that version and makes it current; the previous " +
 			"one stays installed, no longer current. With version set, a version " +
 			"made current by hand is put back on the next apply; without, it " +
-			"is adopted. Version changes could not be " +
-			"tested against a live catalog, which offers one version per " +
-			"integration; they are covered by unit tests only.",
+			"is adopted.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:    true,

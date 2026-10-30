@@ -3,7 +3,14 @@
 
 package client
 
-import "testing"
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"testing"
+)
 
 func TestCompareVersions(t *testing.T) {
 	for _, tc := range []struct {
@@ -55,5 +62,45 @@ func TestLatestVersion(t *testing.T) {
 	}
 	if _, err := LatestVersion(nil); err == nil {
 		t.Error("LatestVersion(nil) did not fail")
+	}
+}
+
+// fakeInstalled serves the installed-integration listing in pages of 50, as
+// the server does, and ignores the name filter: what a client must not rely
+// on.
+func fakeInstalled(t *testing.T, rows []InstalledIntegration) *Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/auth/login/apikey" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": "t"})
+			return
+		}
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		end := min(offset+50, len(rows))
+		_ = json.NewEncoder(w).Encode(map[string]any{"total": len(rows), "items": rows[offset:end]})
+	}))
+	t.Cleanup(srv.Close)
+	return New(srv.URL, "key", "")
+}
+
+func TestInstalledIntegrationsPagesAndChecksTheName(t *testing.T) {
+	var rows []InstalledIntegration
+	for i := range 50 {
+		rows = append(rows, InstalledIntegration{ID: fmt.Sprint("id-", i), Name: fmt.Sprint("other-", i), Version: "v1.0.0", IsCurrent: true})
+	}
+	rows = append(rows, InstalledIntegration{ID: "id-s3", Name: "s3", Version: "v1.1.10", IsCurrent: true})
+	c := fakeInstalled(t, rows)
+
+	got, err := c.InstalledIntegrations("s3")
+	if err != nil || len(got) != 1 || got[0].ID != "id-s3" {
+		t.Fatalf("InstalledIntegrations(s3) = %v, %v; want the s3 row only, from the second page", got, err)
+	}
+	all, err := c.InstalledIntegrations("")
+	if err != nil || len(all) != 51 {
+		t.Fatalf("InstalledIntegrations(\"\") = %d rows, %v; want 51", len(all), err)
+	}
+	it, err := c.IntegrationByName("s3")
+	if err != nil || it.ID != "id-s3" {
+		t.Fatalf("IntegrationByName(s3) = %v, %v; want the s3 row past the first page", it, err)
 	}
 }

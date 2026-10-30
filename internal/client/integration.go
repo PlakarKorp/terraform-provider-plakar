@@ -22,16 +22,18 @@ type Integration struct {
 // is; a single installed version is taken even when not current, which is
 // how the server can list one.
 func (c *Client) IntegrationByName(name string) (*Integration, error) {
-	var res struct {
-		Items []Integration `json:"items"`
-	}
-	if err := c.Do("GET", "/api/v1/integrations/installed", nil, nil, &res); err != nil {
+	installed, err := c.InstalledIntegrations("")
+	if err != nil {
 		return nil, err
 	}
+	items := make([]Integration, 0, len(installed))
+	for _, it := range installed {
+		items = append(items, Integration{ID: it.ID, Name: it.Name, IsCurrent: it.IsCurrent})
+	}
 	var matches []*Integration
-	for i := range res.Items {
-		if res.Items[i].Name == name {
-			matches = append(matches, &res.Items[i])
+	for i := range items {
+		if items[i].Name == name {
+			matches = append(matches, &items[i])
 		}
 	}
 	if len(matches) == 1 {
@@ -49,8 +51,8 @@ func (c *Client) IntegrationByName(name string) (*Integration, error) {
 	if len(matches) > 1 {
 		return nil, fmt.Errorf("%d versions of %q are installed and %d are current", len(matches), name, len(current))
 	}
-	names := make([]string, 0, len(res.Items))
-	for _, it := range res.Items {
+	names := make([]string, 0, len(items))
+	for _, it := range items {
 		names = append(names, it.Name)
 	}
 	return nil, fmt.Errorf("no installed integration named %q — installed: %v", name, names)
@@ -83,13 +85,27 @@ func (c *Client) CatalogVersions(name string) ([]string, error) {
 	return versions, nil
 }
 
-// InstalledIntegrations lists the installed versions of one integration. An
-// uninstalled version leaves this listing, though a GET by its id still
-// answers, with is_current false: this listing is the one to trust.
+// InstalledIntegrations lists the installed versions of one integration, or
+// of all when name is empty. An uninstalled version leaves this listing,
+// though a GET by its id still answers, with is_current false: this listing
+// is the one to trust. The server's name filter is not taken on trust
+// either: only rows of that exact name are kept.
 func (c *Client) InstalledIntegrations(name string) ([]InstalledIntegration, error) {
 	q := url.Values{}
-	q.Set("name", name)
-	return paginate[InstalledIntegration](c, "/api/v1/integrations/installed", q)
+	if name != "" {
+		q.Set("name", name)
+	}
+	rows, err := paginate[InstalledIntegration](c, "/api/v1/integrations/installed", q)
+	if err != nil || name == "" {
+		return rows, err
+	}
+	var named []InstalledIntegration
+	for _, r := range rows {
+		if r.Name == name {
+			named = append(named, r)
+		}
+	}
+	return named, nil
 }
 
 func (c *Client) GetInstalledIntegration(id string) (*InstalledIntegration, error) {
