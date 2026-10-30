@@ -46,7 +46,7 @@ func (r *grantResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 		Description: "A grant — a role held by a member of an organization. The " +
 			"subject must already be a member (see plakar_member); the role " +
 			"names come from the server's catalogue, the standard tier being " +
-			"owner, administrator, operator and auditor.",
+			"owner, administrator, operator and auditor. " + membershipRoleNote,
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed: true,
@@ -127,7 +127,7 @@ func (r *grantResource) Create(ctx context.Context, req resource.CreateRequest, 
 
 	created, err := r.client.CreateGrant(orgID, plan.SubjectID.ValueString(), plan.Role.ValueString())
 	if err != nil {
-		resp.Diagnostics.AddError("creating grant", err.Error())
+		resp.Diagnostics.AddError("creating grant", withRoleHint(err))
 		return
 	}
 
@@ -151,7 +151,7 @@ func (r *grantResource) Read(ctx context.Context, req resource.ReadRequest, resp
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("reading grant", err.Error())
+		resp.Diagnostics.AddError("reading grant", withRoleHint(err))
 		return
 	}
 
@@ -171,7 +171,7 @@ func (r *grantResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	updated, err := r.client.UpdateGrant(state.OrganizationID.ValueString(),
 		state.ID.ValueString(), plan.Role.ValueString())
 	if err != nil {
-		resp.Diagnostics.AddError("updating grant", err.Error())
+		resp.Diagnostics.AddError("updating grant", withRoleHint(err))
 		return
 	}
 
@@ -189,7 +189,7 @@ func (r *grantResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 	}
 	err := r.client.DeleteGrant(state.OrganizationID.ValueString(), state.ID.ValueString())
 	if err != nil && !client.IsNotFound(err) {
-		resp.Diagnostics.AddError("revoking grant", err.Error())
+		resp.Diagnostics.AddError("revoking grant", withRoleHint(err))
 	}
 }
 
@@ -204,4 +204,19 @@ func (r *grantResource) ImportState(ctx context.Context, req resource.ImportStat
 	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("organization_id"), parts[0])...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), parts[1])...)
+}
+
+// membershipRoleNote says which role reading members and grants takes: the
+// listing of an organization's members and its grants answer 403 to a
+// lesser role, e.g. operator.
+const membershipRoleNote = "The provider's API key needs the administrator or owner " +
+	"role on the organization: with a lesser one, e.g. operator, the Control Plane " +
+	"answers 403 to the member and grant listings, so plan and import fail."
+
+// withRoleHint is err's message, with what to ask for when it is a 403.
+func withRoleHint(err error) string {
+	if client.IsForbidden(err) {
+		return err.Error() + "; reading members and grants takes the administrator or owner role on the organization"
+	}
+	return err.Error()
 }
