@@ -78,6 +78,7 @@ resource "plakar_schedule" "retention" {
 | `plakar_organization` (resource) | A tenant, or a perimeter nested under one — destroying it deletes the tenant |
 | `plakar_member` (resource) | A person or service account belonging to an organization; carries no permission |
 | `plakar_grant` (resource) | A role held by a member — one (subject, role) pair |
+| `plakar_environment` / `plakar_data_class` (resource) | A name in the organization's environments or data classes; a default must be imported to be managed |
 | `plakar_store` / `plakar_connector` (data) | Look up existing stores and connectors by name — identity only, no credentials |
 | `plakar_inventory` (data) | An inventory, by name — identity only |
 | `plakar_organization` (data) | An organization, by name across the provider organization's subtree |
@@ -86,7 +87,8 @@ resource "plakar_schedule" "retention" {
 | `plakar_integration` (data) | An installed integration, by name |
 
 All resources import by their id: `terraform import plakar_store.offsite <uuid>`
-(`plakar_inventory_resource` by `<inventory_id>/<urn_id>`).
+(`plakar_inventory_resource` by `<inventory_id>/<urn_id>`, `plakar_environment` and
+`plakar_data_class` by name).
 
 A deployment's tenants, their people and their permissions are three separate
 facts, declared separately — an organization nests under another, a membership
