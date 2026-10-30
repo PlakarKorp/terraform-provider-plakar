@@ -305,10 +305,11 @@ func refreshFacetFromConnector(ctx context.Context, m *connectorFacet, conn *cli
 		// Import path: adopt the server-side map, each field in the form the
 		// server holds it. A reference adopted as a plain value would go back
 		// out without its provider on the next update, and v1 would silently
-		// turn the path into the field's value. A plain value the integration
-		// marks sensitive is not adopted at all: it may be one the
-		// configuration passes write-only, and it stays server-side, kept by
-		// the update's merge.
+		// turn the path into the field's value. A plain value is adopted only
+		// when the integration describes its key as not sensitive: one it
+		// marks sensitive, or does not describe at all, may be a secret, or
+		// one the configuration passes write-only, so it stays server-side,
+		// kept by the update's merge.
 		all := map[string]string{}
 		refs := map[string]secretFieldModel{}
 		for k, f := range conn.Fields {

@@ -13,6 +13,40 @@ A Plakar store — where backup data lands. Destroying the resource removes the 
 ## Example Usage
 
 ```terraform
+# The Vault secret provider the references below read from (see
+# plakar_secret_provider), declared here so the example stands alone.
+variable "vault_token" {
+  type      = string
+  sensitive = true
+  ephemeral = true
+}
+
+resource "plakar_secret_provider" "vault" {
+  name        = "Vault"
+  integration = "vault"
+  fields = {
+    url = "https://vault.example.com:8200"
+  }
+  fields_wo = {
+    token = var.vault_token
+  }
+  fields_wo_version = 1
+}
+
+variable "repo_passphrase" {
+  type      = string
+  sensitive = true
+}
+
+variable "s3_access_key" {
+  type = string
+}
+
+variable "s3_secret_key" {
+  type      = string
+  sensitive = true
+}
+
 resource "plakar_store" "offsite" {
   name        = "Offsite S3"
   integration = "s3"
