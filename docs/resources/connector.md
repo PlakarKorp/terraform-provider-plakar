@@ -86,7 +86,20 @@ resource "plakar_connector" "bucket_write_only" {
   fields_wo_version = 1
 }
 
-# A bucket discovered by a synchronized inventory of the same configuration:
+resource "plakar_inventory" "scaleway" {
+  name = "Scaleway production"
+  type = "scaleway"
+  sync = true
+
+  scaleway {
+    project_id        = "11111111-2222-3333-4444-555555555555"
+    access_key_secret = { provider = plakar_secret_provider.vault.id, path = "secret/inventories/scaleway#access_key" }
+    secret_key_secret = { provider = plakar_secret_provider.vault.id, path = "secret/inventories/scaleway#secret_key" }
+  }
+}
+
+# A synchronized inventory, and a bucket it discovers in the same
+# configuration:
 # the URN is only a string, so depends_on makes the connector wait for the
 # sync that brings the bucket into the inventory.
 resource "plakar_connector" "discovered_bucket" {
