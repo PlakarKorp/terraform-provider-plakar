@@ -101,8 +101,12 @@ func (r *connectorResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				},
 			},
 			"resource": schema.StringAttribute{
-				Required:    true,
-				Description: "URN or name of the inventory resource the connector attaches to.",
+				Required: true,
+				Description: "URN or name of the inventory resource the connector attaches to. " +
+					"Terraform sees no link between this string and the inventory: for a " +
+					"resource that a plakar_inventory with sync = true discovers in the same " +
+					"apply, add depends_on = [plakar_inventory.<name>], or the connector may " +
+					"be created before the sync and not find its resource.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
