@@ -17,6 +17,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-plugin-testing/tfversion"
+
+	"github.com/PlakarKorp/terraform-provider-plakar/internal/client"
 )
 
 var testAccProtoV6ProviderFactories = map[string]func() (tfprotov6.ProviderServer, error){
@@ -390,6 +392,79 @@ resource "plakar_store" "lab" {
 					}
 					return testAccCheckImportHoldsNone(canaries...)(states)
 				},
+			},
+		},
+	})
+}
+
+// A store first made in the web interface, its storage initialized there:
+// initialize = false is the value to use. An import reads initialize as
+// true, the default, so the next plan turns it to false, an update that must
+// apply cleanly and leave the plan empty.
+func TestAccStore_importThenNoInitialize(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("acceptance test, set TF_ACC")
+	}
+	testAccPreCheck(t)
+	name := "TF acceptance store made elsewhere " + acctest.RandString(8)
+	var id string
+	// The import reads the resource back as its URN: the configuration
+	// names it the same way, or the plan would replace the store.
+	res, err := testAccClient().ResourceRef("Silent Frost")
+	if err != nil {
+		t.Fatalf("resolving resource: %v", err)
+	}
+	config := fmt.Sprintf(`
+resource "plakar_store" "elsewhere" {
+  name        = %q
+  integration = "s3"
+  resource    = %q
+  initialize  = false
+  fields = {
+    root = "/tf-acc-store-elsewhere"
+  }
+}
+`, name, res.URN)
+	makeStore := func() {
+		c := testAccClient()
+		integration, err := c.IntegrationByName("s3")
+		if err != nil {
+			t.Fatalf("resolving integration: %v", err)
+		}
+		req := &client.ConnectorRequest{Name: name, URNID: res.URNID, Protocol: "s3", Type: "store",
+			Fields: map[string]client.Field{"root": {Value: "/tf-acc-store-elsewhere"}}, DataClasses: []string{}}
+		req.Integration.ID = integration.ID
+		conn, err := c.CreateConnector(req)
+		if err != nil {
+			t.Fatalf("creating store: %v", err)
+		}
+		id = conn.ID
+		t.Cleanup(func() { _ = c.DeleteConnector(conn.ID) })
+	}
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				PreConfig:          makeStore,
+				Config:             config,
+				ResourceName:       "plakar_store.elsewhere",
+				ImportState:        true,
+				ImportStatePersist: true,
+				ImportStateIdFunc:  func(*terraform.State) (string, error) { return id, nil },
+				ImportStateCheck: func(states []*terraform.InstanceState) error {
+					if got := states[0].Attributes["initialize"]; got != "true" {
+						return fmt.Errorf("imported initialize = %q, want true", got)
+					}
+					return nil
+				},
+			},
+			{
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction("plakar_store.elsewhere", plancheck.ResourceActionUpdate),
+				}},
+				Check: resource.TestCheckResourceAttr("plakar_store.elsewhere", "initialize", "false"),
 			},
 		},
 	})

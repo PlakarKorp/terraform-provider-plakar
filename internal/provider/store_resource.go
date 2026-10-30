@@ -442,7 +442,8 @@ func (r *storeResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	if plan.Protocol.IsUnknown() || plan.Protocol.IsNull() {
 		plan.Protocol = state.Protocol
 	}
-	plan.Initialize = state.Initialize
+	// initialize only acts at creation: state takes the planned value as is,
+	// e.g. false after an import, which reads it as true.
 	plan.FieldsWO = types.MapNull(types.StringType)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
