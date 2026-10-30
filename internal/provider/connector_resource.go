@@ -181,7 +181,7 @@ func (r *connectorResource) Configure(_ context.Context, req resource.ConfigureR
 // ModifyPlan holds a connector to what the Control Plane accepts: every
 // connector write carries an inventory resource (urn_id), so a connector is
 // created with one, keeps one, and, once its resource is gone, takes no
-// change but a new resource, which replaces it.
+// change but a new resource, which attaches it in place.
 func (r *connectorResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
 	if req.Plan.Raw.IsNull() {
 		return // destroy
