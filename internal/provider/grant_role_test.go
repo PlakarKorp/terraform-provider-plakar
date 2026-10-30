@@ -16,7 +16,7 @@ import (
 func TestWithRoleHint(t *testing.T) {
 	forbidden := &client.Error{Method: "GET", Path: "/api/v1/account/organizations/org/members", Status: 403, Detail: "Forbidden"}
 	got := withRoleHint(forbidden)
-	for _, want := range []string{"GET /api/v1/account/organizations/org/members answered 403: Forbidden", "administrator or owner role"} {
+	for _, want := range []string{"GET /api/v1/account/organizations/org/members answered 403: Forbidden", "managing members and grants, reading them included", "administrator or owner role"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("%q does not say %q", got, want)
 		}

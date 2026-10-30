@@ -216,7 +216,7 @@ const membershipRoleNote = "The provider's API key needs the administrator or ow
 // withRoleHint is err's message, with what to ask for when it is a 403.
 func withRoleHint(err error) string {
 	if client.IsForbidden(err) {
-		return err.Error() + "; reading members and grants takes the administrator or owner role on the organization"
+		return err.Error() + "; managing members and grants, reading them included, takes the administrator or owner role on the organization"
 	}
 	return err.Error()
 }
