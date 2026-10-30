@@ -26,24 +26,29 @@ type connectorResource struct {
 }
 
 type connectorModel struct {
-	ID          types.String `tfsdk:"id"`
-	Name        types.String `tfsdk:"name"`
-	Type        types.String `tfsdk:"type"`
-	Integration types.String `tfsdk:"integration"`
-	Protocol    types.String `tfsdk:"protocol"`
-	Resource    types.String `tfsdk:"resource"`
-	URNID       types.String `tfsdk:"urn_id"`
-	Fields      types.Map    `tfsdk:"fields"`
-	Environment types.String `tfsdk:"environment"`
-	DataClasses types.List   `tfsdk:"data_classes"`
-	Temperature types.String `tfsdk:"temperature"`
+	ID              types.String `tfsdk:"id"`
+	Name            types.String `tfsdk:"name"`
+	Type            types.String `tfsdk:"type"`
+	Integration     types.String `tfsdk:"integration"`
+	Protocol        types.String `tfsdk:"protocol"`
+	Resource        types.String `tfsdk:"resource"`
+	URNID           types.String `tfsdk:"urn_id"`
+	Fields          types.Map    `tfsdk:"fields"`
+	SecretFields    types.Map    `tfsdk:"secret_fields"`
+	FieldsWO        types.Map    `tfsdk:"fields_wo"`
+	FieldsWOVersion types.Int64  `tfsdk:"fields_wo_version"`
+	Environment     types.String `tfsdk:"environment"`
+	DataClasses     types.List   `tfsdk:"data_classes"`
+	Temperature     types.String `tfsdk:"temperature"`
 }
 
 func (m *connectorModel) facet() *connectorFacet {
 	return &connectorFacet{
 		Name: &m.Name, Integration: &m.Integration, Protocol: &m.Protocol,
 		Resource: &m.Resource, URNID: &m.URNID, Fields: &m.Fields,
-		Environment: &m.Environment, DataClasses: &m.DataClasses,
+		SecretFields: &m.SecretFields, FieldsWO: &m.FieldsWO,
+		FieldsWOVersion: &m.FieldsWOVersion,
+		Environment:     &m.Environment, DataClasses: &m.DataClasses,
 		Temperature: &m.Temperature,
 	}
 }
@@ -57,6 +62,7 @@ func (r *connectorResource) Metadata(_ context.Context, req resource.MetadataReq
 }
 
 func (r *connectorResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	fieldsWO, fieldsWOVersion := writeOnlyFieldsAttributes("secret_access_key")
 	resp.Schema = schema.Schema{
 		Description: "A Plakar source or destination connector. For stores, use plakar_store.",
 		Attributes: map[string]schema.Attribute{
@@ -112,8 +118,12 @@ func (r *connectorResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				Sensitive:   true,
 				Description: "Integration-specific configuration. Only the keys " +
 					"declared here are managed; anything else set server-side keeps " +
-					"its value.",
+					"its value. An import adopts only the keys the integration does " +
+					"not mark sensitive; declare the others again, in any form.",
 			},
+			"secret_fields":     secretFieldsAttribute(),
+			"fields_wo":         fieldsWO,
+			"fields_wo_version": fieldsWOVersion,
 			"environment": schema.StringAttribute{
 				Optional:    true,
 				Description: "Environment label, e.g. production.",
@@ -148,9 +158,27 @@ func (r *connectorResource) Configure(_ context.Context, req resource.ConfigureR
 	r.client = c
 }
 
+// ValidateConfig refuses a field set both as a value and as a reference, and a
+// reference with nothing to resolve.
+func (r *connectorResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var config connectorModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(checkFieldForms(
+		fieldForm{"fields", config.Fields},
+		fieldForm{"secret_fields", config.SecretFields},
+		fieldForm{"fields_wo", config.FieldsWO},
+	)...)
+	resp.Diagnostics.Append(checkSecretFields(config.SecretFields)...)
+}
+
 func (r *connectorResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan connectorModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	// Write-only values are never in the plan, only in the configuration.
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("fields_wo"), &plan.FieldsWO)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -167,7 +195,8 @@ func (r *connectorResource) Create(ctx context.Context, req resource.CreateReque
 	}
 
 	kind := plan.Type.ValueString()
-	creq := connectorRequestFromFacet(ctx, plan.facet(), kind, &resp.Diagnostics)
+	writeOnly := writeOnlyFieldsToSend(ctx, plan.FieldsWO, true, nil, &resp.Diagnostics)
+	creq := connectorRequestFromFacet(ctx, plan.facet(), kind, writeOnly, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -188,6 +217,7 @@ func (r *connectorResource) Create(ctx context.Context, req resource.CreateReque
 	// apply. The other computed attributes must be known too for the state
 	// to be savable.
 	plan.ID = types.StringValue(created.ID)
+	plan.FieldsWO = types.MapNull(types.StringType)
 	plan.URNID = types.StringValue(res.URNID)
 	plan.Protocol = types.StringValue(creq.Protocol)
 	if plan.Temperature.IsUnknown() {
@@ -203,7 +233,7 @@ func (r *connectorResource) Create(ctx context.Context, req resource.CreateReque
 		resp.Diagnostics.AddError("reading connector after create", err.Error())
 		return
 	}
-	refreshFacetFromConnector(ctx, plan.facet(), conn, &resp.Diagnostics)
+	refreshFacetFromConnector(ctx, plan.facet(), conn, nil, &resp.Diagnostics)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -227,14 +257,23 @@ func (r *connectorResource) Read(ctx context.Context, req resource.ReadRequest, 
 	if conn.Type != "" {
 		state.Type = types.StringValue(conn.Type)
 	}
-	refreshFacetFromConnector(ctx, state.facet(), conn, &resp.Diagnostics)
+	var sensitive map[string]bool
+	if state.Fields.IsNull() {
+		if sensitive, err = sensitiveFieldNames(r.client, conn); err != nil {
+			resp.Diagnostics.AddError("reading the integration's fields", err.Error())
+			return
+		}
+	}
+	refreshFacetFromConnector(ctx, state.facet(), conn, sensitive, &resp.Diagnostics)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func (r *connectorResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan, state connectorModel
+	var configWO types.Map
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("fields_wo"), &configWO)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -245,7 +284,9 @@ func (r *connectorResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	creq := mergeConnectorRequest(ctx, plan.facet(), current, plan.Type.ValueString(), &resp.Diagnostics)
+	writeOnly := writeOnlyFieldsToSend(ctx, configWO, !plan.FieldsWOVersion.Equal(state.FieldsWOVersion),
+		[]types.Map{state.Fields, state.SecretFields}, &resp.Diagnostics)
+	creq := mergeConnectorRequest(ctx, plan.facet(), current, plan.Type.ValueString(), writeOnly, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -262,6 +303,7 @@ func (r *connectorResource) Update(ctx context.Context, req resource.UpdateReque
 	if plan.Temperature.IsUnknown() {
 		plan.Temperature = state.Temperature
 	}
+	plan.FieldsWO = types.MapNull(types.StringType)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 

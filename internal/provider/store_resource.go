@@ -28,18 +28,21 @@ type storeResource struct {
 }
 
 type storeModel struct {
-	ID          types.String `tfsdk:"id"`
-	Name        types.String `tfsdk:"name"`
-	Integration types.String `tfsdk:"integration"`
-	Protocol    types.String `tfsdk:"protocol"`
-	Resource    types.String `tfsdk:"resource"`
-	URNID       types.String `tfsdk:"urn_id"`
-	Fields      types.Map    `tfsdk:"fields"`
-	Environment types.String `tfsdk:"environment"`
-	DataClasses types.List   `tfsdk:"data_classes"`
-	Temperature types.String `tfsdk:"temperature"`
-	Initialize  types.Bool   `tfsdk:"initialize"`
-	Compression types.String `tfsdk:"compression"`
+	ID              types.String `tfsdk:"id"`
+	Name            types.String `tfsdk:"name"`
+	Integration     types.String `tfsdk:"integration"`
+	Protocol        types.String `tfsdk:"protocol"`
+	Resource        types.String `tfsdk:"resource"`
+	URNID           types.String `tfsdk:"urn_id"`
+	Fields          types.Map    `tfsdk:"fields"`
+	SecretFields    types.Map    `tfsdk:"secret_fields"`
+	FieldsWO        types.Map    `tfsdk:"fields_wo"`
+	FieldsWOVersion types.Int64  `tfsdk:"fields_wo_version"`
+	Environment     types.String `tfsdk:"environment"`
+	DataClasses     types.List   `tfsdk:"data_classes"`
+	Temperature     types.String `tfsdk:"temperature"`
+	Initialize      types.Bool   `tfsdk:"initialize"`
+	Compression     types.String `tfsdk:"compression"`
 }
 
 func NewStoreResource() resource.Resource {
@@ -51,6 +54,7 @@ func (r *storeResource) Metadata(_ context.Context, req resource.MetadataRequest
 }
 
 func (r *storeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	fieldsWO, fieldsWOVersion := writeOnlyFieldsAttributes("passphrase")
 	resp.Schema = schema.Schema{
 		Description: "A Plakar store — where backup data lands. Destroying the " +
 			"resource removes the store from Plakar; data in the underlying " +
@@ -99,8 +103,13 @@ func (r *storeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 				Description: "Integration-specific configuration. Must carry a " +
 					"non-empty `passphrase` when the store is initialized here: it " +
 					"encrypts the store at rest. Only the keys declared here are " +
-					"managed; anything else set server-side keeps its value.",
+					"managed; anything else set server-side keeps its value. An " +
+					"import adopts only the keys the integration does not mark " +
+					"sensitive; declare the others again, in any form.",
 			},
+			"secret_fields":     secretFieldsAttribute(),
+			"fields_wo":         fieldsWO,
+			"fields_wo_version": fieldsWOVersion,
 			"environment": schema.StringAttribute{
 				Optional:    true,
 				Description: "Environment label, e.g. production.",
@@ -165,6 +174,12 @@ func (r *storeResource) ValidateConfig(ctx context.Context, req resource.Validat
 		return
 	}
 	resp.Diagnostics.Append(checkConfiguredPassphrase(&config)...)
+	resp.Diagnostics.Append(checkFieldForms(
+		fieldForm{"fields", config.Fields},
+		fieldForm{"secret_fields", config.SecretFields},
+		fieldForm{"fields_wo", config.FieldsWO},
+	)...)
+	resp.Diagnostics.Append(checkSecretFields(config.SecretFields)...)
 }
 
 // checkConfiguredPassphrase is the plan-time half of the check: everything that
@@ -174,6 +189,17 @@ func checkConfiguredPassphrase(config *storeModel) diag.Diagnostics {
 	// initialize defaults to true, so only an explicit false opts out; a store
 	// that is not initialized here has its passphrase set wherever it was.
 	if !config.Initialize.IsNull() && !config.Initialize.IsUnknown() && !config.Initialize.ValueBool() {
+		return diags
+	}
+	// A passphrase resolved from a secret provider is only a value at run
+	// time, on the server; checkSecretFields holds its path to non-empty.
+	if passphraseIsSecretField(config.SecretFields) {
+		return diags
+	}
+	if pass, ok := writeOnlyPassphrase(config.FieldsWO); ok {
+		if !pass.IsUnknown() && strings.TrimSpace(pass.ValueString()) == "" {
+			diags.Append(emptyPassphrase())
+		}
 		return diags
 	}
 	// A map whose keys are not known yet says nothing about the passphrase.
@@ -201,12 +227,40 @@ func checkConfiguredPassphrase(config *storeModel) diag.Diagnostics {
 	return diags
 }
 
+// passphraseIsSecretField reports a passphrase declared in secret_fields. An
+// unknown map may hold one, and defers to apply like an unknown fields map.
+func passphraseIsSecretField(m types.Map) bool {
+	if m.IsUnknown() {
+		return true
+	}
+	if m.IsNull() {
+		return false
+	}
+	_, ok := m.Elements()["passphrase"]
+	return ok
+}
+
+// writeOnlyPassphrase returns the passphrase declared in fields_wo, if any.
+func writeOnlyPassphrase(m types.Map) (types.String, bool) {
+	if m.IsNull() || m.IsUnknown() {
+		return types.String{}, false
+	}
+	v, ok := m.Elements()["passphrase"]
+	if !ok {
+		return types.String{}, false
+	}
+	s, ok := v.(types.String)
+	return s, ok
+}
+
 // missingPassphrase and emptyPassphrase keep the wording identical between the
 // plan-time check and the apply-time one that catches computed values.
 func missingPassphrase() diag.Diagnostic {
 	return diag.NewAttributeErrorDiagnostic(path.Root("fields"),
 		"a store needs a passphrase",
-		"set fields.passphrase: it encrypts the store at rest, and the store "+
+		"set fields.passphrase, fields_wo.passphrase to keep it out of state, "+
+			"or secret_fields.passphrase to resolve it from a secret provider: "+
+			"it encrypts the store at rest, and the store "+
 			"cannot be created without one. Pass initialize = false if the "+
 			"underlying storage is already initialized elsewhere.")
 }
@@ -222,6 +276,15 @@ func emptyPassphrase() diag.Diagnostic {
 // skip: a passphrase that was unknown during validation, because it comes from
 // a variable or another resource, and lands empty once resolved.
 func validatePassphrase(ctx context.Context, plan *storeModel, diags *diag.Diagnostics) {
+	if passphraseIsSecretField(plan.SecretFields) {
+		return
+	}
+	if pass, ok := writeOnlyPassphrase(plan.FieldsWO); ok {
+		if strings.TrimSpace(pass.ValueString()) == "" {
+			diags.Append(emptyPassphrase())
+		}
+		return
+	}
 	fields := map[string]string{}
 	diags.Append(plan.Fields.ElementsAs(ctx, &fields, false)...)
 	if diags.HasError() {
@@ -240,6 +303,8 @@ func validatePassphrase(ctx context.Context, plan *storeModel, diags *diag.Diagn
 func (r *storeResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan storeModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	// Write-only values are never in the plan, only in the configuration.
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("fields_wo"), &plan.FieldsWO)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -262,7 +327,8 @@ func (r *storeResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
-	creq := connectorRequestFromFacet(ctx, plan.facet(), "store", &resp.Diagnostics)
+	writeOnly := writeOnlyFieldsToSend(ctx, plan.FieldsWO, true, nil, &resp.Diagnostics)
+	creq := connectorRequestFromFacet(ctx, plan.facet(), "store", writeOnly, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -285,6 +351,7 @@ func (r *storeResource) Create(ctx context.Context, req resource.CreateRequest, 
 	// it on the next apply. The other computed attributes must be known too
 	// for the state to be savable.
 	plan.ID = types.StringValue(created.ID)
+	plan.FieldsWO = types.MapNull(types.StringType)
 	plan.URNID = types.StringValue(res.URNID)
 	plan.Protocol = types.StringValue(creq.Protocol)
 	if plan.Temperature.IsUnknown() {
@@ -311,7 +378,7 @@ func (r *storeResource) Create(ctx context.Context, req resource.CreateRequest, 
 		resp.Diagnostics.AddError("reading store after create", err.Error())
 		return
 	}
-	refreshFacetFromConnector(ctx, plan.facet(), conn, &resp.Diagnostics)
+	refreshFacetFromConnector(ctx, plan.facet(), conn, nil, &resp.Diagnostics)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -332,14 +399,23 @@ func (r *storeResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		return
 	}
 
-	refreshFacetFromConnector(ctx, state.facet(), conn, &resp.Diagnostics)
+	var sensitive map[string]bool
+	if state.Fields.IsNull() {
+		if sensitive, err = sensitiveFieldNames(r.client, conn); err != nil {
+			resp.Diagnostics.AddError("reading the integration's fields", err.Error())
+			return
+		}
+	}
+	refreshFacetFromConnector(ctx, state.facet(), conn, sensitive, &resp.Diagnostics)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func (r *storeResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan, state storeModel
+	var configWO types.Map
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("fields_wo"), &configWO)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -352,7 +428,9 @@ func (r *storeResource) Update(ctx context.Context, req resource.UpdateRequest, 
 
 	// v1 update is a full-body POST: merge the plan over the connector's
 	// current state so attributes we do not manage keep their values.
-	creq := mergeConnectorRequest(ctx, plan.facet(), current, "store", &resp.Diagnostics)
+	writeOnly := writeOnlyFieldsToSend(ctx, configWO, !plan.FieldsWOVersion.Equal(state.FieldsWOVersion),
+		[]types.Map{state.Fields, state.SecretFields}, &resp.Diagnostics)
+	creq := mergeConnectorRequest(ctx, plan.facet(), current, "store", writeOnly, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -366,7 +444,9 @@ func (r *storeResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	if plan.Protocol.IsUnknown() || plan.Protocol.IsNull() {
 		plan.Protocol = state.Protocol
 	}
-	plan.Initialize = state.Initialize
+	// initialize only acts at creation: state takes the planned value as is,
+	// e.g. false after an import, which reads it as true.
+	plan.FieldsWO = types.MapNull(types.StringType)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -383,4 +463,8 @@ func (r *storeResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 
 func (r *storeResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	// initialize only acts at creation and the API keeps no trace of it, so
+	// an imported store takes the default; left null, the first plan after
+	// an import would report it as a change.
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("initialize"), true)...)
 }
