@@ -109,7 +109,8 @@ func mergeConnectorRequest(ctx context.Context, m *connectorFacet, current *clie
 // the field keys the practitioner declared are refreshed — the rest of the
 // server-side map is not our contract. Attributes that are null in state stay
 // null when the server reports an empty value, so optional attributes do not
-// oscillate between null and "".
+// oscillate between null and "". A field the server filtered carries no
+// value: state keeps what it has, and an import adopts nothing for it.
 func refreshFacetFromConnector(ctx context.Context, m *connectorFacet, conn *client.Connector, diags *diag.Diagnostics) {
 	*m.Name = types.StringValue(conn.Name)
 	*m.Protocol = types.StringValue(conn.Protocol)
@@ -147,9 +148,12 @@ func refreshFacetFromConnector(ctx context.Context, m *connectorFacet, conn *cli
 	}
 
 	if m.Fields.IsNull() || m.Fields.IsUnknown() {
-		// Import path: adopt the full server-side map.
+		// Import path: adopt the server-side map, less the filtered values.
 		all := map[string]string{}
 		for k, f := range conn.Fields {
+			if f.Filtered {
+				continue
+			}
 			all[k] = f.Value
 		}
 		mv, d := types.MapValueFrom(ctx, types.StringType, all)
@@ -160,7 +164,7 @@ func refreshFacetFromConnector(ctx context.Context, m *connectorFacet, conn *cli
 	declared := map[string]string{}
 	diags.Append(m.Fields.ElementsAs(ctx, &declared, false)...)
 	for k := range declared {
-		if f, ok := conn.Fields[k]; ok {
+		if f, ok := conn.Fields[k]; ok && !f.Filtered {
 			declared[k] = f.Value
 		}
 	}
