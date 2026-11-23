@@ -5,6 +5,7 @@ package client
 
 import (
 	"fmt"
+	"net/url"
 )
 
 // Organization is the slice of the v1 organization we manage. v1 has no
@@ -256,5 +257,60 @@ func (c *Client) UpdateGrant(orgID, grantID, role string) (*Grant, error) {
 
 func (c *Client) DeleteGrant(orgID, grantID string) error {
 	return c.Do("DELETE", "/api/v1/account/organizations/"+orgID+"/access/"+grantID,
+		nil, nil, nil)
+}
+
+// --- classification -----------------------------------------------------------
+
+// Classification is one of an organization's two labelling lists, the
+// environments and the data classes. Both have the same shape in v1: a list of
+// plain strings, a create that is an upsert (an existing name answers 200 with
+// the existing row, no conflict) and a delete by name. There is no update.
+type Classification struct {
+	path  string // environments, data_classes
+	field string // environment, class: the create body key
+	list  string // environments, classes: the listing key
+}
+
+var (
+	Environments = Classification{"environments", "environment", "environments"}
+	DataClasses  = Classification{"data_classes", "class", "classes"}
+)
+
+// ListClassification returns the organization's names. The search route is not
+// used: it matches loosely and answers 500 on long names the create accepts.
+func (c *Client) ListClassification(orgID string, k Classification) ([]string, error) {
+	var res map[string][]string
+	if err := c.Do("GET", "/api/v1/account/organizations/"+orgID+"/"+k.path,
+		nil, nil, &res); err != nil {
+		return nil, err
+	}
+	return res[k.list], nil
+}
+
+// HasClassification reports whether the name exists, compared exactly: the
+// server keeps names as given, case and spaces included.
+func (c *Client) HasClassification(orgID string, k Classification, name string) (bool, error) {
+	names, err := c.ListClassification(orgID, k)
+	if err != nil {
+		return false, err
+	}
+	for _, n := range names {
+		if n == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (c *Client) CreateClassification(orgID string, k Classification, name string) error {
+	return c.Do("POST", "/api/v1/account/organizations/"+orgID+"/"+k.path,
+		map[string]string{k.field: name}, nil, nil)
+}
+
+// DeleteClassification escapes the whole name: a slash in it would otherwise
+// address another route, and a percent sign another name.
+func (c *Client) DeleteClassification(orgID string, k Classification, name string) error {
+	return c.Do("DELETE", "/api/v1/account/organizations/"+orgID+"/"+k.path+"/"+url.PathEscape(name),
 		nil, nil, nil)
 }
