@@ -3,12 +3,12 @@
 page_title: "plakar_grant Resource - plakar"
 subcategory: ""
 description: |-
-  A grant — a role held by a member of an organization. The subject must already be a member (see plakar_member); the role names come from the server's catalogue, the standard tier being owner, administrator, operator and auditor.
+  A grant — a role held by a member of an organization. The subject must already be a member (see plakar_member); the role names come from the server's catalogue, the standard tier being owner, administrator, operator and auditor. The provider's API key needs the administrator or owner role on the organization: with a lesser one, e.g. operator, the Control Plane answers 403 to the member and grant listings, so plan and import fail.
 ---
 
 # plakar_grant (Resource)
 
-A grant — a role held by a member of an organization. The subject must already be a member (see plakar_member); the role names come from the server's catalogue, the standard tier being owner, administrator, operator and auditor.
+A grant — a role held by a member of an organization. The subject must already be a member (see plakar_member); the role names come from the server's catalogue, the standard tier being owner, administrator, operator and auditor. The provider's API key needs the administrator or owner role on the organization: with a lesser one, e.g. operator, the Control Plane answers 403 to the member and grant listings, so plan and import fail.
 
 ## Example Usage
 
