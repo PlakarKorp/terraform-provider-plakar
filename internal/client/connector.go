@@ -92,12 +92,29 @@ func (c *Client) DeleteConnector(id string) error {
 }
 
 // InitializeStore creates the underlying kloset store on a store connector.
+// A failed initialization still answers 200, with ok false and the reason in
+// the body, so the body is what decides; a body without ok is taken as the
+// success it used to mean.
 func (c *Client) InitializeStore(id, compression string) error {
 	var body map[string]string
 	if compression != "" {
 		body = map[string]string{"compression": compression}
 	}
-	return c.Do("POST", "/api/v1/connectors/"+id+"/stores/create", body, nil, nil)
+	var res struct {
+		OK    *bool   `json:"ok"`
+		Error *string `json:"error"`
+	}
+	if err := c.Do("POST", "/api/v1/connectors/"+id+"/stores/create", body, nil, &res); err != nil {
+		return err
+	}
+	if res.OK != nil && !*res.OK {
+		reason := "no reason given"
+		if res.Error != nil {
+			reason = *res.Error
+		}
+		return fmt.Errorf("the server could not initialize the store: %s", reason)
+	}
+	return nil
 }
 
 // FindConnector locates one connector of a kind by name; nil when absent.
