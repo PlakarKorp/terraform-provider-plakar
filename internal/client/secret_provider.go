@@ -8,9 +8,9 @@ import (
 	"net/url"
 )
 
-// SecretProvider is the slice of the v1 secret provider we manage. Read
-// echoes every field unmasked, the credential included, so whatever holds one
-// of these must keep its fields out of Terraform state.
+// SecretProvider is the slice of the v1 secret provider we manage. Before
+// plakman v0.19 a read echoes every field unmasked, the credential included,
+// so whatever holds one of these must keep its fields out of Terraform state.
 type SecretProvider struct {
 	ID          string           `json:"id"`
 	Name        string           `json:"name"`

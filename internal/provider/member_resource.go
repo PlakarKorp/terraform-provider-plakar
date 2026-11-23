@@ -57,7 +57,7 @@ func (r *memberResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			"treat state accordingly); an address that already has an account " +
 			"simply gains the membership. A membership carries no permission; " +
 			"what a member may do is a plakar_grant. Destroying the resource " +
-			"removes the membership, not the person's account.",
+			"removes the membership, not the person's account. " + membershipRoleNote,
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:      true,
@@ -191,7 +191,7 @@ func (r *memberResource) Create(ctx context.Context, req resource.CreateRequest,
 	invite, err := r.client.InviteMember(orgID,
 		plan.Email.ValueString(), plan.Name.ValueString(), plan.Service.ValueBool())
 	if err != nil {
-		resp.Diagnostics.AddError("adding member", err.Error())
+		resp.Diagnostics.AddError("adding member", withRoleHint(err))
 		return
 	}
 
@@ -225,7 +225,7 @@ func (r *memberResource) Read(ctx context.Context, req resource.ReadRequest, res
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("reading member", err.Error())
+		resp.Diagnostics.AddError("reading member", withRoleHint(err))
 		return
 	}
 	if member == nil {
@@ -272,7 +272,7 @@ func (r *memberResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	}
 	err := r.client.DeleteMember(state.OrganizationID.ValueString(), state.ID.ValueString())
 	if err != nil && !client.IsNotFound(err) {
-		resp.Diagnostics.AddError("removing member", err.Error())
+		resp.Diagnostics.AddError("removing member", withRoleHint(err))
 	}
 }
 
