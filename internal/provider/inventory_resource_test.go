@@ -93,10 +93,10 @@ data "plakar_inventory" "fleet" {
 	})
 }
 
-// A provider-backed inventory: the typed configuration block, echoed unmasked
-// by the API, must hold refresh-no-diff, and a region change must update in
-// place. The credentials are fakes — creation only stores them; a sync would
-// fail, and no sync runs here.
+// A provider-backed inventory: the typed configuration block must hold
+// refresh-no-diff, and a region change must update in place. The credentials
+// are fakes — creation only stores them; a sync would fail, and no sync runs
+// here. The API filters them on read, so an import cannot recover them.
 func TestAccInventory_aws(t *testing.T) {
 	config := func(region string) string {
 		return fmt.Sprintf(`
@@ -139,9 +139,10 @@ resource "plakar_inventory" "aws" {
 				Check: resource.TestCheckResourceAttr("plakar_inventory.aws", "aws.region", "eu-west-3"),
 			},
 			{
-				ResourceName:      "plakar_inventory.aws",
-				ImportState:       true,
-				ImportStateVerify: true,
+				ResourceName:            "plakar_inventory.aws",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"aws.access_key", "aws.secret_access_key"},
 			},
 		},
 	})

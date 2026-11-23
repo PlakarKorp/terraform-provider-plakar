@@ -9,12 +9,16 @@ import (
 )
 
 // Field is one connector configuration value, optionally backed by a secret
-// provider.
+// provider. Since plakman v0.19 a read leaves a sensitive literal out and
+// marks the field Filtered; sent back as is, such a field keeps the stored
+// value, while an empty value without the mark overwrites it. Callers that
+// merge their changes over a read must therefore carry Filtered through.
 type Field struct {
 	Value    string `json:"value"`
 	Provider *struct {
 		ID string `json:"id"`
 	} `json:"provider,omitempty"`
+	Filtered bool `json:"filtered,omitempty"`
 }
 
 // Connector is the slice of the v1 connector we manage. Read returns more
