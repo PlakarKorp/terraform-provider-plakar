@@ -103,6 +103,7 @@ func (p *plakarProvider) Resources(_ context.Context) []func() resource.Resource
 		NewEnvironmentResource,
 		NewDataClassResource,
 		NewIntegrationResource,
+		NewSecretProviderResource,
 	}
 }
 
@@ -115,5 +116,6 @@ func (p *plakarProvider) DataSources(_ context.Context) []func() datasource.Data
 		NewInventoryDataSource,
 		NewOrganizationDataSource,
 		NewMemberDataSource,
+		NewSecretProviderDataSource,
 	}
 }

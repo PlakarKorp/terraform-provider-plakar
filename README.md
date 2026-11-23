@@ -80,12 +80,14 @@ resource "plakar_schedule" "retention" {
 | `plakar_grant` (resource) | A role held by a member — one (subject, role) pair |
 | `plakar_environment` / `plakar_data_class` (resource) | A name in the organization's environments or data classes; a default must be imported to be managed |
 | `plakar_integration` (resource) | An integration installed from the catalog and kept current; global to the deployment, needs the platform-admin role |
+| `plakar_secret_provider` (resource) | A secret manager (Vault, a cloud secret manager) credentials are resolved from at run time; its own credential is write-only |
 | `plakar_store` / `plakar_connector` (data) | Look up existing stores and connectors by name — identity only, no credentials |
 | `plakar_inventory` (data) | An inventory, by name — identity only |
 | `plakar_organization` (data) | An organization, by name across the provider organization's subtree |
 | `plakar_member` (data) | A member, by email (a person) or name (a service account) |
 | `plakar_resource` (data) | An inventory resource, by URN or name |
 | `plakar_integration` (data) | An installed integration, by name |
+| `plakar_secret_provider` (data) | A secret provider, by name; identity only, no credentials |
 
 All resources import by their id: `terraform import plakar_store.offsite <uuid>`
 (`plakar_inventory_resource` by `<inventory_id>/<urn_id>`, `plakar_environment` and

@@ -421,3 +421,69 @@ func (d *memberDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 	config.Service = types.BoolValue(member.IsService)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &config)...)
 }
+
+// --- plakar_secret_provider ----------------------------------------------------
+
+// secretProviderDataSource is the read-only lookup of a secret provider by
+// name, for pointing fields at one Terraform does not manage. Identity only:
+// the API reads a secret provider's credential back in clear, and no field is
+// ever copied out of it.
+type secretProviderDataSource struct{ client *client.Client }
+
+type secretProviderDataModel struct {
+	Name        types.String `tfsdk:"name"`
+	ID          types.String `tfsdk:"id"`
+	Integration types.String `tfsdk:"integration"`
+	Protocol    types.String `tfsdk:"protocol"`
+}
+
+func NewSecretProviderDataSource() datasource.DataSource { return &secretProviderDataSource{} }
+
+func (d *secretProviderDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_secret_provider"
+}
+
+func (d *secretProviderDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Description: "A secret provider, looked up by name.",
+		Attributes: map[string]schema.Attribute{
+			"name":        schema.StringAttribute{Required: true},
+			"id":          schema.StringAttribute{Computed: true},
+			"integration": schema.StringAttribute{Computed: true},
+			"protocol":    schema.StringAttribute{Computed: true},
+		},
+	}
+}
+
+func (d *secretProviderDataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
+	d.client = configureClient(req.ProviderData, &resp.Diagnostics)
+}
+
+func (d *secretProviderDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	var config secretProviderDataModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	found, err := d.client.FindSecretProvider(config.Name.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("looking up secret provider", err.Error())
+		return
+	}
+	if found == nil {
+		resp.Diagnostics.AddError("secret provider not found",
+			fmt.Sprintf("no secret provider named %q is visible; an empty result can also mean "+
+				"the API key's account holds no grant in the organization", config.Name.ValueString()))
+		return
+	}
+	// The listing leaves the protocol empty; the single read has it.
+	sp, err := d.client.GetSecretProvider(found.ID)
+	if err != nil {
+		resp.Diagnostics.AddError("reading secret provider", err.Error())
+		return
+	}
+	config.ID = types.StringValue(sp.ID)
+	config.Integration = types.StringValue(sp.Integration.Name)
+	config.Protocol = types.StringValue(sp.Protocol)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &config)...)
+}
