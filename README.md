@@ -79,6 +79,7 @@ resource "plakar_schedule" "retention" {
 | `plakar_member` (resource) | A person or service account belonging to an organization; carries no permission |
 | `plakar_grant` (resource) | A role held by a member — one (subject, role) pair |
 | `plakar_environment` / `plakar_data_class` (resource) | A name in the organization's environments or data classes; a default must be imported to be managed |
+| `plakar_integration` (resource) | An integration installed from the catalog and kept current; global to the deployment, needs the platform-admin role |
 | `plakar_store` / `plakar_connector` (data) | Look up existing stores and connectors by name — identity only, no credentials |
 | `plakar_inventory` (data) | An inventory, by name — identity only |
 | `plakar_organization` (data) | An organization, by name across the provider organization's subtree |

@@ -102,6 +102,7 @@ func (p *plakarProvider) Resources(_ context.Context) []func() resource.Resource
 		NewGrantResource,
 		NewEnvironmentResource,
 		NewDataClassResource,
+		NewIntegrationResource,
 	}
 }
 
