@@ -23,8 +23,8 @@ import (
 	"github.com/PlakarKorp/terraform-provider-plakar/internal/client"
 )
 
-// The secret provider lifecycle, with its credential write-only. The API reads
-// the credential back in clear, so the test's real question is whether it
+// The secret provider lifecycle, with its credential write-only. The API holds
+// the credential in clear, so the test's real question is whether it
 // ever reaches state or a plan: the token is a fresh canary, searched for in
 // the serialized state and plan at every step, and checked on the server to
 // prove it was sent at all. Creating a secret provider does not contact the
@@ -212,15 +212,35 @@ func testAccCheckSecretProviderField(name, key, want string) resource.TestCheckF
 		if !ok {
 			return fmt.Errorf("%s not in state", name)
 		}
-		sp, err := testAccClient().GetSecretProvider(rs.Primary.ID)
+		got, err := testAccSecretProviderValue(rs.Primary.ID, key)
 		if err != nil {
 			return err
 		}
-		if sp.Fields[key].Value != want {
+		if got != want {
 			return fmt.Errorf("%s: the server's %s is not the configured one", name, key)
 		}
 		return nil
 	}
+}
+
+// testAccSecretProviderValue is the value the server holds for a field: the
+// read's, or, when the read filtered it, the one the reveal route gives.
+func testAccSecretProviderValue(id, key string) (string, error) {
+	c := testAccClient()
+	sp, err := c.GetSecretProvider(id)
+	if err != nil {
+		return "", err
+	}
+	if f := sp.Fields[key]; !f.Filtered {
+		return f.Value, nil
+	}
+	var revealed struct {
+		Values map[string]string `json:"values"`
+	}
+	if err := c.Do("GET", "/api/v1/secret_providers/"+id+"/secrets", nil, nil, &revealed); err != nil {
+		return "", err
+	}
+	return revealed.Values[key], nil
 }
 
 func testAccCheckSecretProviderDestroyed(s *terraform.State) error {
