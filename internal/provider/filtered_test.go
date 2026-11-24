@@ -25,7 +25,7 @@ func TestRefreshFacetKeepsFilteredFields(t *testing.T) {
 
 	m := connectorModel{Fields: fieldsMap(t, map[string]string{"passphrase": "secret", "root": "/state"})}
 	var diags diag.Diagnostics
-	refreshFacetFromConnector(ctx, m.facet(), conn, &diags)
+	refreshFacetFromConnector(ctx, m.facet(), conn, nil, &diags)
 	if diags.HasError() {
 		t.Fatalf("refresh: %v", diags)
 	}
@@ -35,8 +35,9 @@ func TestRefreshFacetKeepsFilteredFields(t *testing.T) {
 		t.Errorf("fields after refresh %v, want the state passphrase and the server root", fields)
 	}
 
+	// Even for a key the integration would not call sensitive.
 	imported := connectorModel{Fields: types.MapNull(types.StringType)}
-	refreshFacetFromConnector(ctx, imported.facet(), conn, &diags)
+	refreshFacetFromConnector(ctx, imported.facet(), conn, map[string]bool{"passphrase": false, "root": false}, &diags)
 	if diags.HasError() {
 		t.Fatalf("import refresh: %v", diags)
 	}
@@ -59,7 +60,7 @@ func TestMergeConnectorRequestResendsFiltered(t *testing.T) {
 	}}
 	m := connectorModel{Fields: fieldsMap(t, map[string]string{"passphrase": "secret", "root": "/new"})}
 	var diags diag.Diagnostics
-	req := mergeConnectorRequest(ctx, m.facet(), current, "store", &diags)
+	req := mergeConnectorRequest(ctx, m.facet(), current, "store", nil, &diags)
 	if diags.HasError() {
 		t.Fatalf("merge: %v", diags)
 	}

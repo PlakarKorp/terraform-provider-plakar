@@ -14,11 +14,15 @@ import (
 // value, while an empty value without the mark overwrites it. Callers that
 // merge their changes over a read must therefore carry Filtered through.
 type Field struct {
-	Value    string `json:"value"`
-	Provider *struct {
-		ID string `json:"id"`
-	} `json:"provider,omitempty"`
-	Filtered bool `json:"filtered,omitempty"`
+	Value    string         `json:"value"`
+	Provider *FieldProvider `json:"provider,omitempty"`
+	Filtered bool           `json:"filtered,omitempty"`
+}
+
+// FieldProvider names the secret provider a field is resolved from; the
+// field's value is then the path of the secret in it.
+type FieldProvider struct {
+	ID string `json:"id"`
 }
 
 // Connector is the slice of the v1 connector we manage. Read returns more
