@@ -202,6 +202,97 @@ func testAccCheckConnectorFieldValue(name, key, want string) resource.TestCheckF
 	}
 }
 
+// testAccInventoryScalewayField reads one field of a scaleway inventory's
+// configuration from the server.
+func testAccInventoryScalewayField(s *terraform.State, name, key string) (client.Field, error) {
+	rs, ok := s.RootModule().Resources[name]
+	if !ok {
+		return client.Field{}, fmt.Errorf("%s not in state", name)
+	}
+	inv, err := testAccClient().GetInventory(rs.Primary.ID)
+	if err != nil {
+		return client.Field{}, err
+	}
+	if inv.Scaleway == nil {
+		return client.Field{}, fmt.Errorf("%s: the server has no scaleway configuration", name)
+	}
+	switch key {
+	case "scw_access_key":
+		return inv.Scaleway.AccessKey, nil
+	case "scw_secret_key":
+		return inv.Scaleway.SecretKey, nil
+	}
+	return client.Field{}, fmt.Errorf("unknown scaleway field %s", key)
+}
+
+// testAccCheckInventoryField checks that a scaleway inventory field is a
+// reference to the named secret provider at path.
+func testAccCheckInventoryField(name, key, spName, wantPath string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		f, err := testAccInventoryScalewayField(s, name, key)
+		if err != nil {
+			return err
+		}
+		sp, ok := s.RootModule().Resources[spName]
+		if !ok {
+			return fmt.Errorf("%s not in state", spName)
+		}
+		if f.Provider == nil || f.Provider.ID != sp.Primary.ID || f.Value != wantPath {
+			return fmt.Errorf("%s: the server does not hold %s as a reference to %s at %q", name, key, spName, wantPath)
+		}
+		return nil
+	}
+}
+
+// testAccCheckInventoryFieldValue checks a plain scaleway inventory field
+// against the expected value. The message never carries either value.
+func testAccCheckInventoryFieldValue(name, key, want string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		f, err := testAccInventoryScalewayField(s, name, key)
+		if err != nil {
+			return err
+		}
+		got := f.Value
+		if f.Filtered {
+			if got, err = testAccRevealed("inventories", s.RootModule().Resources[name].Primary.ID, key); err != nil {
+				return err
+			}
+		}
+		if f.Provider != nil || got != want {
+			return fmt.Errorf("%s: the server's %s is not the expected plain value", name, key)
+		}
+		return nil
+	}
+}
+
+// testAccCheckDestroyed checks that every store, connector, inventory and
+// secret provider a test created is gone from the server once destroyed, so a
+// destroy that leaves an object behind fails the test instead of the sandbox
+// filling up unseen.
+func testAccCheckDestroyed(s *terraform.State) error {
+	c := testAccClient()
+	for _, rs := range s.RootModule().Resources {
+		var err error
+		switch rs.Type {
+		case "plakar_store", "plakar_connector":
+			_, err = c.GetConnector(rs.Primary.ID)
+		case "plakar_inventory":
+			_, err = c.GetInventory(rs.Primary.ID)
+		case "plakar_secret_provider":
+			_, err = c.GetSecretProvider(rs.Primary.ID)
+		default:
+			continue
+		}
+		if err == nil {
+			return fmt.Errorf("%s %s still exists after destroy", rs.Type, rs.Primary.ID)
+		}
+		if !client.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 // testAccRevealed is the value behind a field a read filtered, from the
 // reveal route of its object: connectors, inventories or secret_providers.
 func testAccRevealed(kind, id, key string) (string, error) {

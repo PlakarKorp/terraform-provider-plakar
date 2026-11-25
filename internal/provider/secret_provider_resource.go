@@ -51,7 +51,14 @@ func (r *secretProviderResource) Schema(_ context.Context, _ resource.SchemaRequ
 			"store, connector and inventory credentials can be resolved from at " +
 			"run time, so their values never reach Plakar's database or " +
 			"Terraform state. Pass the secret provider's own credential in " +
-			"fields_wo, which Terraform 1.11 and later never write to state.",
+			"fields_wo, which Terraform 1.11 and later never write to state. " +
+			"Scaleway Secret Manager (integration scaleway) takes scw_region in " +
+			"fields and scw_secret_key in fields_wo: the secret key of an API " +
+			"key whose IAM policy grants SecretManagerReadOnly and " +
+			"SecretManagerSecretAccess on the projects holding the secrets, " +
+			"nothing more. Its test call is not implemented by the integration; " +
+			"a reference resolves when the store, connector or inventory using " +
+			"it runs or synchronizes.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:      true,
@@ -85,7 +92,9 @@ func (r *secretProviderResource) Schema(_ context.Context, _ resource.SchemaRequ
 				Sensitive:   true,
 				Description: "Integration-specific configuration that may live in " +
 					"state, e.g. url for vault. Only the keys declared here are " +
-					"managed; anything else set server-side keeps its value.",
+					"managed; anything else set server-side keeps its value. An " +
+					"import adopts only the keys the integration does not mark " +
+					"sensitive.",
 			},
 			"fields_wo":         fieldsWO,
 			"fields_wo_version": fieldsWOVersion,

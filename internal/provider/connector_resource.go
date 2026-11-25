@@ -118,7 +118,8 @@ func (r *connectorResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				Sensitive:   true,
 				Description: "Integration-specific configuration. Only the keys " +
 					"declared here are managed; anything else set server-side keeps " +
-					"its value.",
+					"its value. An import adopts only the keys the integration does " +
+					"not mark sensitive; declare the others again, in any form.",
 			},
 			"secret_fields":     secretFieldsAttribute(),
 			"fields_wo":         fieldsWO,

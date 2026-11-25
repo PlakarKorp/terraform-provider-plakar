@@ -75,7 +75,9 @@ func secretFieldsAttribute() schema.MapNestedAttribute {
 				"path": schema.StringAttribute{
 					Required: true,
 					Description: "Where the secret lives in the provider. For Vault: " +
-						"{secret_engine}/{path}#{field}, e.g. secret/prod/s3#secret_key.",
+						"{secret_engine}/{path}#{field}, e.g. secret/prod/s3#secret_key. " +
+						"For Scaleway Secret Manager: {secret_id}#{key}, the secret's " +
+						"value being a JSON object that holds key.",
 				},
 			},
 		},

@@ -103,7 +103,9 @@ func (r *storeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 				Description: "Integration-specific configuration. Must carry a " +
 					"non-empty `passphrase` when the store is initialized here: it " +
 					"encrypts the store at rest. Only the keys declared here are " +
-					"managed; anything else set server-side keeps its value.",
+					"managed; anything else set server-side keeps its value. An " +
+					"import adopts only the keys the integration does not mark " +
+					"sensitive; declare the others again, in any form.",
 			},
 			"secret_fields":     secretFieldsAttribute(),
 			"fields_wo":         fieldsWO,

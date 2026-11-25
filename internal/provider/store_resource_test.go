@@ -144,6 +144,7 @@ resource "plakar_store" "lab" {
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccSecretFieldsPreCheck(t) },
+		CheckDestroy:             testAccCheckDestroyed,
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		TerraformVersionChecks: []tfversion.TerraformVersionCheck{
 			tfversion.SkipBelow(tfversion.Version1_11_0),
@@ -322,6 +323,7 @@ resource "plakar_store" "lab" {
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccSecretFieldsPreCheck(t) },
+		CheckDestroy:             testAccCheckDestroyed,
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		TerraformVersionChecks: []tfversion.TerraformVersionCheck{
 			tfversion.SkipBelow(tfversion.Version1_11_0),
@@ -443,6 +445,7 @@ resource "plakar_store" "elsewhere" {
 	}
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
+		CheckDestroy:             testAccCheckDestroyed,
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{

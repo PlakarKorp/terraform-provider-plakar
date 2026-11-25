@@ -110,7 +110,7 @@ resource "plakar_store" "offsite_write_only" {
 
 ### Required
 
-- `fields` (Map of String, Sensitive) Integration-specific configuration. Must carry a non-empty `passphrase` when the store is initialized here: it encrypts the store at rest. Only the keys declared here are managed; anything else set server-side keeps its value.
+- `fields` (Map of String, Sensitive) Integration-specific configuration. Must carry a non-empty `passphrase` when the store is initialized here: it encrypts the store at rest. Only the keys declared here are managed; anything else set server-side keeps its value. An import adopts only the keys the integration does not mark sensitive; declare the others again, in any form.
 - `integration` (String) Name of the installed integration backing the store, e.g. s3.
 - `name` (String) Name of the store, unique among stores in the organization.
 - `resource` (String) URN or name of the inventory resource the store attaches to.
@@ -139,7 +139,7 @@ resource "plakar_store" "offsite_write_only" {
 
 Required:
 
-- `path` (String) Where the secret lives in the provider. For Vault: {secret_engine}/{path}#{field}, e.g. secret/prod/s3#secret_key.
+- `path` (String) Where the secret lives in the provider. For Vault: {secret_engine}/{path}#{field}, e.g. secret/prod/s3#secret_key. For Scaleway Secret Manager: {secret_id}#{key}, the secret's value being a JSON object that holds key.
 - `provider` (String) Id of the plakar_secret_provider holding the secret.
 
 ## Import
