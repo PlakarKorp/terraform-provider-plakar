@@ -57,5 +57,7 @@ release:
     - glob: "terraform-registry-manifest.json"
       name_template: "{{ .ProjectName }}_{{ .Version }}_manifest.json"
 
+# The release notes are GitHub's own: one line per pull request merged since
+# the previous tag. A release drafted by hand before the tag keeps its notes.
 changelog:
-  disable: true
+  use: github-native
