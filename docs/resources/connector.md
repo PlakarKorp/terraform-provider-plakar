@@ -133,14 +133,14 @@ resource "plakar_connector" "discovered_bucket" {
 
 > **NOTE**: [Write-only arguments](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments) are supported in Terraform 1.11 and later.
 
-- `data_classes` (List of String) Data classes the connector carries.
+- `data_classes` (List of String) Data classes the connector carries. Sources only: the Control Plane refuses them on a destination.
 - `environment` (String) Environment label, e.g. production.
 - `fields_wo` (Map of String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Integration-specific configuration that never lands in state, e.g. secret_access_key. Requires Terraform 1.11 or later. Its values are sent at creation, when fields_wo_version changes, and for a key that has just moved here from another form: Terraform cannot compare a write-only value with anything, so the version is what rotates it. A key may be set in one form only. A key removed from fields_wo keeps its server-side value, as for fields. An import cannot recover it: after one, keep fields_wo in the configuration and bump fields_wo_version to send it again.
 - `fields_wo_version` (Number) Change this to send fields_wo again, for instance after rotating a credential it carries.
 - `protocol` (String) Protocol spoken to the resource. Defaults to the integration name, which matches for the standard integrations.
 - `resource` (String) URN or name of the inventory resource the connector attaches to; required to create one. Terraform sees no link between this string and the inventory: for a resource that a plakar_inventory with sync = true discovers in the same apply, add depends_on = [plakar_inventory.<name>], or the connector may be created before the sync and not find its resource. A connector whose resource was deleted afterwards, by hand or by a sync after it disappeared from the cloud, is left without one, and the Control Plane refuses any change to it but a new resource: a refresh clears resource in state, an import leaves it unset. With resource unset in the configuration too, the connector plans no change and can be destroyed; with resource set, the connector is attached to that resource in place, e.g. once it reappeared under the same URN. On a connector that has its resource, changing resource replaces the connector, and unsetting it is refused.
 - `secret_fields` (Attributes Map) Fields resolved from a secret provider each time Plakar needs them, instead of being stored: Plakar and Terraform state only hold the path. Keyed like fields; a key may not appear in both. (see [below for nested schema](#nestedatt--secret_fields))
-- `temperature` (String) Storage temperature. Computed by the server when not set.
+- `temperature` (String) Storage temperature, as the server reports it. Refused when set: the Control Plane only accepts a temperature on a store.
 
 ### Read-Only
 

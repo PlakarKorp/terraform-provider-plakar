@@ -151,13 +151,15 @@ func (r *connectorResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 			"data_classes": schema.ListAttribute{
 				Optional:    true,
 				ElementType: types.StringType,
-				Description: "Data classes the connector carries.",
+				Description: "Data classes the connector carries. Sources only: " +
+					"the Control Plane refuses them on a destination.",
 			},
 			"temperature": schema.StringAttribute{
 				Optional: true,
 				Computed: true,
-				Description: "Storage temperature. Computed by the server when " +
-					"not set.",
+				Description: "Storage temperature, as the server reports it. " +
+					"Refused when set: the Control Plane only accepts a " +
+					"temperature on a store.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
@@ -221,8 +223,9 @@ func (r *connectorResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 	}
 }
 
-// ValidateConfig refuses a field set both as a value and as a reference, and a
-// reference with nothing to resolve.
+// ValidateConfig refuses a field set both as a value and as a reference, a
+// reference with nothing to resolve, and the attributes the Control Plane
+// does not take on this kind of connector.
 func (r *connectorResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var config connectorModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
@@ -235,6 +238,9 @@ func (r *connectorResource) ValidateConfig(ctx context.Context, req resource.Val
 		fieldForm{"fields_wo", config.FieldsWO},
 	)...)
 	resp.Diagnostics.Append(checkSecretFields(config.SecretFields)...)
+	if !config.Type.IsNull() && !config.Type.IsUnknown() {
+		resp.Diagnostics.Append(checkPlacement(config.Type.ValueString(), config.DataClasses, config.Temperature)...)
+	}
 }
 
 func (r *connectorResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {

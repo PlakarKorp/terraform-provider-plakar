@@ -117,7 +117,8 @@ func (r *storeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 			"data_classes": schema.ListAttribute{
 				Optional:    true,
 				ElementType: types.StringType,
-				Description: "Data classes the store accepts.",
+				Description: "Refused when set: the Control Plane only accepts data " +
+					"classes on a source connector.",
 			},
 			"temperature": schema.StringAttribute{
 				Optional: true,
@@ -180,6 +181,23 @@ func (r *storeResource) ValidateConfig(ctx context.Context, req resource.Validat
 		fieldForm{"fields_wo", config.FieldsWO},
 	)...)
 	resp.Diagnostics.Append(checkSecretFields(config.SecretFields)...)
+	resp.Diagnostics.Append(checkPlacement("store", config.DataClasses, types.StringNull())...)
+}
+
+// checkPlacement refuses at plan time the two attributes the Control Plane
+// only takes on one kind of connector, and answers elsewhere with a 400 that
+// gives no reason: data classes on a source, a temperature on a store.
+func checkPlacement(kind string, dataClasses types.List, temperature types.String) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if kind != "source" && !dataClasses.IsNull() && !dataClasses.IsUnknown() && len(dataClasses.Elements()) > 0 {
+		diags.AddAttributeError(path.Root("data_classes"), "data classes on a "+kind,
+			"the Control Plane only accepts data classes on a source connector; remove data_classes.")
+	}
+	if kind != "store" && !temperature.IsNull() && !temperature.IsUnknown() && temperature.ValueString() != "" {
+		diags.AddAttributeError(path.Root("temperature"), "temperature on a "+kind,
+			"the Control Plane only accepts a temperature on a store (plakar_store); remove temperature.")
+	}
+	return diags
 }
 
 // checkConfiguredPassphrase is the plan-time half of the check: everything that
