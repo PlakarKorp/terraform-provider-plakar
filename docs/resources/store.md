@@ -120,7 +120,7 @@ resource "plakar_store" "offsite_write_only" {
 > **NOTE**: [Write-only arguments](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments) are supported in Terraform 1.11 and later.
 
 - `compression` (String) Compression for the store at initialization (GZIP, LZ4, ZSTD). Unset keeps the engine's default.
-- `data_classes` (List of String) Data classes the store accepts.
+- `data_classes` (List of String) Refused when set: the Control Plane only accepts data classes on a source connector.
 - `environment` (String) Environment label, e.g. production.
 - `fields_wo` (Map of String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Integration-specific configuration that never lands in state, e.g. passphrase. Requires Terraform 1.11 or later. Its values are sent at creation, when fields_wo_version changes, and for a key that has just moved here from another form: Terraform cannot compare a write-only value with anything, so the version is what rotates it. A key may be set in one form only. A key removed from fields_wo keeps its server-side value, as for fields. An import cannot recover it: after one, keep fields_wo in the configuration and bump fields_wo_version to send it again.
 - `fields_wo_version` (Number) Change this to send fields_wo again, for instance after rotating a credential it carries.

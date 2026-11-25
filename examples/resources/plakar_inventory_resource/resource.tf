@@ -1,3 +1,8 @@
+variable "db1_connection_string" {
+  type      = string
+  sensitive = true
+}
+
 resource "plakar_inventory" "fleet" {
   name = "Fleet"
   type = "self-managed"

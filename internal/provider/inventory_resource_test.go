@@ -87,6 +87,9 @@ data "plakar_inventory" "fleet" {
 				ResourceName:      "plakar_inventory.fleet",
 				ImportState:       true,
 				ImportStateVerify: true,
+				// The Control Plane stamps a new inventory on its own a
+				// while after its creation, which can land mid-test.
+				ImportStateVerifyIgnore: []string{"last_synced_at"},
 			},
 			{
 				ResourceName:      "plakar_inventory_resource.db1",

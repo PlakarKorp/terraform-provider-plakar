@@ -13,11 +13,22 @@ A scheduled task — a backup, prune, sync or check with its recurrence rules. A
 ## Example Usage
 
 ```terraform
+# The source and the store the schedules below run on, looked up by name so
+# the example stands alone.
+data "plakar_connector" "db" {
+  name = "Production DB"
+  type = "source"
+}
+
+data "plakar_store" "offsite" {
+  name = "Offsite S3"
+}
+
 resource "plakar_schedule" "nightly" {
   name      = "Nightly database backup"
   type      = "backup"
   origin_id = data.plakar_connector.db.id
-  target_id = plakar_store.offsite.id
+  target_id = data.plakar_store.offsite.id
   labels    = ["nightly"]
 
   rule {
@@ -28,7 +39,7 @@ resource "plakar_schedule" "nightly" {
 resource "plakar_schedule" "retention" {
   name      = "Retention policy"
   type      = "prune"
-  origin_id = plakar_store.offsite.id
+  origin_id = data.plakar_store.offsite.id
   group_by  = "dataset"
   retention = {
     day     = 7
