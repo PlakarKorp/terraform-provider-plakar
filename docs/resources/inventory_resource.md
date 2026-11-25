@@ -13,6 +13,11 @@ A resource declared in a self-managed inventory — a machine, database or share
 ## Example Usage
 
 ```terraform
+variable "db1_connection_string" {
+  type      = string
+  sensitive = true
+}
+
 resource "plakar_inventory" "fleet" {
   name = "Fleet"
   type = "self-managed"
