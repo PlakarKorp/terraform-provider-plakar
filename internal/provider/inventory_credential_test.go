@@ -51,10 +51,12 @@ func TestCredentialWire(t *testing.T) {
 		{"write-only, was a reference", cred("wo", "new", 1), ptr(cred("ref", "kv/x#k", 0)), server, client.Field{Value: "new"}},
 		{"write-only, server holds a reference", cred("wo", "new", 1), ptr(cred("wo", "", 1)),
 			client.Field{Value: "kv/x#k", Provider: ref}, client.Field{Value: "new"}},
+		{"write-only, same version, server filtered", cred("wo", "new", 1), ptr(cred("wo", "", 1)),
+			client.Field{Filtered: true}, client.Field{Filtered: true}},
 		{"unset", cred("none", "", 0), nil, server, client.Field{}},
 	} {
 		got := tc.config.wire(tc.prior, tc.current)
-		if got.Value != tc.want.Value || (got.Provider == nil) != (tc.want.Provider == nil) ||
+		if got.Value != tc.want.Value || got.Filtered != tc.want.Filtered || (got.Provider == nil) != (tc.want.Provider == nil) ||
 			(got.Provider != nil && got.Provider.ID != tc.want.Provider.ID) {
 			t.Errorf("%s: sent %+v, want %+v", tc.name, got, tc.want)
 		}
@@ -81,6 +83,9 @@ func TestCredentialRefresh(t *testing.T) {
 		{"server plain, configuration plain", "plain", client.Field{Value: "AK2"}, "AK2", "", true},
 		{"server plain, configuration reference", "ref", client.Field{Value: "AK2"}, "", "-", true},
 		{"server plain, configuration write-only", "wo", client.Field{Value: "secret"}, "", "", true},
+		{"server filtered, configuration plain", "plain", client.Field{Filtered: true}, "old", "", true},
+		{"server filtered, configuration reference", "ref", client.Field{Filtered: true}, "", "-", true},
+		{"server filtered, configuration write-only", "wo", client.Field{Filtered: true}, "", "", true},
 	} {
 		c := cred(tc.form, "old", 1)
 		c.refresh(tc.server)
