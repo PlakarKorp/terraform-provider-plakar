@@ -38,6 +38,9 @@ func testAccPreCheck(t *testing.T) {
 // full-body POST updates and server-side churn coexist with refresh-no-diff.
 // Every step ends with an implicit plan that must be empty.
 func TestAccStore_lifecycle(t *testing.T) {
+	// A root of its own: a destroyed store leaves its data in the storage,
+	// and a second run on the same root would fail to initialize.
+	root := "/tf-acc-store-" + acctest.RandString(8)
 	config := func(storageClass string) string {
 		return fmt.Sprintf(`
 resource "plakar_store" "lab" {
@@ -51,14 +54,14 @@ resource "plakar_store" "lab" {
     access_key             = "minioadmin"
     secret_access_key      = "minioadmin"
     port                   = "9000"
-    root                   = "/tf-acc-store"
+    root                   = %q
     storage_class          = %q
     use_tls                = "false"
     tls_insecure_no_verify = "false"
     virtual_host           = "false"
   }
 }
-`, storageClass)
+`, root, storageClass)
 	}
 
 	resource.Test(t, resource.TestCase{

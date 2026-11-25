@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 )
@@ -14,7 +15,9 @@ import (
 // The issue's headline: a backup schedule and a prune schedule carrying the
 // retention rule, wired to resources declared in the same config.
 func TestAccSchedule_lifecycle(t *testing.T) {
-	base := `
+	// A root of its own: a destroyed store leaves its data in the storage,
+	// and a second run on the same root would fail to initialize.
+	base := fmt.Sprintf(`
 data "plakar_connector" "src" {
   name = "S3 Source"
   type = "source"
@@ -30,14 +33,14 @@ resource "plakar_store" "lab" {
     access_key             = "minioadmin"
     secret_access_key      = "minioadmin"
     port                   = "9000"
-    root                   = "/tf-acc-schedule"
+    root                   = %q
     storage_class          = "STANDARD"
     use_tls                = "false"
     tls_insecure_no_verify = "false"
     virtual_host           = "false"
   }
 }
-`
+`, "/tf-acc-schedule-"+acctest.RandString(8))
 	config := func(periodicity int, retention string) string {
 		return base + fmt.Sprintf(`
 resource "plakar_schedule" "nightly" {
