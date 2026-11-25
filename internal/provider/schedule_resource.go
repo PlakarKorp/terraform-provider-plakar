@@ -69,12 +69,14 @@ func (r *scheduleResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			},
 			"name": schema.StringAttribute{
 				Required: true,
-				Description: "Name of the schedule. Stored but not echoed by the " +
-					"API, so drift on the name is not detected.",
+				Description: "Name of the schedule. The Control Plane does not " +
+					"keep it: it lives in the Terraform state only, and an import " +
+					"does not recover it.",
 			},
 			"description": schema.StringAttribute{
-				Optional:    true,
-				Description: "Free-form description. Stored but not echoed by the API.",
+				Optional: true,
+				Description: "Free-form description. Like the name, it lives in " +
+					"the Terraform state only.",
 			},
 			"type": schema.StringAttribute{
 				Required:    true,
@@ -239,7 +241,8 @@ func (r *scheduleResource) taskRequestFromModel(ctx context.Context, m *schedule
 }
 
 // refreshFromTask maps a stored task back onto the model. Name and
-// description are not echoed by the API and keep their state values.
+// description are not kept by the Control Plane (PlakarKorp/plakman#2030)
+// and keep their state values.
 func (r *scheduleResource) refreshFromTask(ctx context.Context, m *scheduleModel, task *client.Task, resp interface {
 	AddError(summary, detail string)
 }) {

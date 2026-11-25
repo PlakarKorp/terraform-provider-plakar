@@ -114,8 +114,9 @@ func (r *connectorResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 					"resource unset in the configuration too, the connector plans no " +
 					"change and can be destroyed; with resource set, the connector is " +
 					"attached to that resource in place, e.g. once it reappeared under the " +
-					"same URN. On a connector that has its resource, changing resource " +
-					"replaces the connector, and unsetting it is refused.",
+					"same URN. On a connector that has its resource, naming another " +
+					"resource replaces the connector, going from the URN to the name of " +
+					"the same resource or back does not, and unsetting it is refused.",
 			},
 			"urn_id": schema.StringAttribute{
 				Computed:      true,
