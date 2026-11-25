@@ -87,9 +87,6 @@ func (r *storeResource) Schema(_ context.Context, _ resource.SchemaRequest, resp
 			"resource": schema.StringAttribute{
 				Required:    true,
 				Description: "URN or name of the inventory resource the store attaches to.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
 			},
 			"urn_id": schema.StringAttribute{
 				Computed:      true,
@@ -161,6 +158,23 @@ func (r *storeResource) Configure(_ context.Context, req resource.ConfigureReque
 		return
 	}
 	r.client = c
+}
+
+// ModifyPlan replaces a store whose resource changes, unless the new value
+// names the resource the store is already on (see movesResource).
+func (r *storeResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() {
+		return // create or destroy
+	}
+	var plan, state storeModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if movesResource(r.client.ResourceRef, state.Resource, plan.Resource, state.URNID) {
+		resp.RequiresReplace = append(resp.RequiresReplace, path.Root("resource"))
+	}
 }
 
 // ValidateConfig holds a store to the one field it cannot be created without:

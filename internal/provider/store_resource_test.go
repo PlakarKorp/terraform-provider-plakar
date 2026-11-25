@@ -413,8 +413,9 @@ func TestAccStore_importThenNoInitialize(t *testing.T) {
 	testAccPreCheck(t)
 	name := "TF acceptance store made elsewhere " + acctest.RandString(8)
 	var id string
-	// The import reads the resource back as its URN: the configuration
-	// names it the same way, or the plan would replace the store.
+	// The import reads the resource back as its URN and the configuration
+	// names it by name: the same resource, so the plan must not replace the
+	// store.
 	res, err := testAccClient().ResourceRef("Silent Frost")
 	if err != nil {
 		t.Fatalf("resolving resource: %v", err)
@@ -423,13 +424,13 @@ func TestAccStore_importThenNoInitialize(t *testing.T) {
 resource "plakar_store" "elsewhere" {
   name        = %q
   integration = "s3"
-  resource    = %q
+  resource    = "Silent Frost"
   initialize  = false
   fields = {
     root = "/tf-acc-store-elsewhere"
   }
 }
-`, name, res.URN)
+`, name)
 	makeStore := func() {
 		c := testAccClient()
 		integration, err := c.IntegrationByName("s3")
@@ -462,6 +463,9 @@ resource "plakar_store" "elsewhere" {
 					if got := states[0].Attributes["initialize"]; got != "true" {
 						return fmt.Errorf("imported initialize = %q, want true", got)
 					}
+					if got := states[0].Attributes["resource"]; got != res.URN {
+						return fmt.Errorf("imported resource = %q, want the URN %q", got, res.URN)
+					}
 					return nil
 				},
 			},
@@ -470,7 +474,11 @@ resource "plakar_store" "elsewhere" {
 				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
 					plancheck.ExpectResourceAction("plakar_store.elsewhere", plancheck.ResourceActionUpdate),
 				}},
-				Check: resource.TestCheckResourceAttr("plakar_store.elsewhere", "initialize", "false"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("plakar_store.elsewhere", "initialize", "false"),
+					resource.TestCheckResourceAttr("plakar_store.elsewhere", "resource", "Silent Frost"),
+					resource.TestCheckResourceAttrPtr("plakar_store.elsewhere", "id", &id),
+				),
 			},
 		},
 	})
