@@ -45,6 +45,22 @@ func (m *storeModel) facet() *connectorFacet {
 	}
 }
 
+// movesResource tells whether a planned `resource` names another inventory
+// resource than the one a connector is on. `resource` takes a URN or a name,
+// and an import records the URN whatever the configuration says, so two
+// strings may name one resource. A value that is not known yet or does not
+// resolve counts as a move: the replacement reports it when it applies.
+func movesResource(resolve func(string) (*client.Resource, error), state, plan, urnID types.String) bool {
+	if plan.Equal(state) {
+		return false
+	}
+	if plan.IsUnknown() || urnID.IsNull() {
+		return true
+	}
+	res, err := resolve(plan.ValueString())
+	return err != nil || res.URNID != urnID.ValueString()
+}
+
 // secretFieldModel is one field resolved from a secret provider at run time:
 // where the secret lives, never its value.
 type secretFieldModel struct {

@@ -116,16 +116,6 @@ func (r *connectorResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 					"attached to that resource in place, e.g. once it reappeared under the " +
 					"same URN. On a connector that has its resource, changing resource " +
 					"replaces the connector, and unsetting it is refused.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplaceIf(
-						func(_ context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
-							// A connector without a resource takes one in place.
-							resp.RequiresReplace = !req.StateValue.IsNull()
-						},
-						"Changing the resource of a connector that has one replaces it.",
-						"Changing the resource of a connector that has one replaces it.",
-					),
-				},
 			},
 			"urn_id": schema.StringAttribute{
 				Computed:      true,
@@ -202,7 +192,16 @@ func (r *connectorResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 	}
 	var state connectorModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if resp.Diagnostics.HasError() || plan.Resource.IsUnknown() {
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// A connector that has its resource is replaced when it moves to another
+	// one; a connector without a resource takes one in place.
+	if !state.Resource.IsNull() && !plan.Resource.IsNull() &&
+		movesResource(r.client.ResourceRef, state.Resource, plan.Resource, state.URNID) {
+		resp.RequiresReplace = append(resp.RequiresReplace, path.Root("resource"))
+	}
+	if plan.Resource.IsUnknown() {
 		return
 	}
 	orphan := state.URNID.IsNull()
