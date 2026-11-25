@@ -261,7 +261,8 @@ func mergeConnectorRequest(ctx context.Context, m *connectorFacet, current *clie
 // the field keys the practitioner declared are refreshed — the rest of the
 // server-side map is not our contract. Attributes that are null in state stay
 // null when the server reports an empty value, so optional attributes do not
-// oscillate between null and "".
+// oscillate between null and "". A field the server filtered carries no
+// value: state keeps what it has, and an import adopts nothing for it.
 //
 // sensitive is only read on the import path, and comes from
 // sensitiveFieldNames.
@@ -311,13 +312,13 @@ func refreshFacetFromConnector(ctx context.Context, m *connectorFacet, conn *cli
 		// when the integration describes its key as not sensitive: one it
 		// marks sensitive, or does not describe at all, may be a secret, or
 		// one the configuration passes write-only, so it stays server-side,
-		// kept by the update's merge.
+		// kept by the update's merge; so does one the server filtered.
 		all := map[string]string{}
 		refs := map[string]secretFieldModel{}
 		for k, f := range conn.Fields {
 			if f.Provider != nil {
 				refs[k] = secretFieldModel{Provider: types.StringValue(f.Provider.ID), Path: types.StringValue(f.Value)}
-			} else if s, known := sensitive[k]; known && !s {
+			} else if s, known := sensitive[k]; known && !s && !f.Filtered {
 				all[k] = f.Value
 			}
 		}
@@ -338,7 +339,7 @@ func refreshFacetFromConnector(ctx context.Context, m *connectorFacet, conn *cli
 	declared := map[string]string{}
 	diags.Append(m.Fields.ElementsAs(ctx, &declared, false)...)
 	for k := range declared {
-		if f, ok := conn.Fields[k]; ok {
+		if f, ok := conn.Fields[k]; ok && !f.Filtered {
 			declared[k] = f.Value
 		}
 	}

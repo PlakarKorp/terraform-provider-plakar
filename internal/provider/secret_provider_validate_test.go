@@ -4,6 +4,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -19,6 +20,30 @@ import (
 // The framework only calls ValidateConfig on a resource that announces it, so
 // the hook silently never runs if this assertion stops holding.
 var _ resource.ResourceWithValidateConfig = &secretProviderResource{}
+
+// A declared key the server filtered keeps its state value on refresh; a
+// declared key it sent in clear takes the server's.
+func TestSecretProviderRefreshKeepsFiltered(t *testing.T) {
+	ctx := context.Background()
+	m := secretProviderModel{Fields: types.MapValueMust(types.StringType, map[string]attr.Value{
+		"url":   types.StringValue("http://state:8200"),
+		"token": types.StringValue("secret"),
+	})}
+	sp := &client.SecretProvider{Name: "sp", Protocol: "vault-sm", Fields: map[string]client.Field{
+		"url":   {Value: "http://server:8200"},
+		"token": {Filtered: true},
+	}}
+	var diags diag.Diagnostics
+	(&secretProviderResource{}).refresh(ctx, &m, sp, &diags)
+	if diags.HasError() {
+		t.Fatalf("refresh: %v", diags)
+	}
+	fields := map[string]string{}
+	m.Fields.ElementsAs(ctx, &fields, false)
+	if fields["token"] != "secret" || fields["url"] != "http://server:8200" {
+		t.Errorf("fields after refresh %v, want the state token and the server url", fields)
+	}
+}
 
 func TestCheckFieldForms(t *testing.T) {
 	m := func(keys ...string) types.Map {

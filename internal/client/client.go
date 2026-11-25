@@ -68,6 +68,12 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("%s %s answered %d: %s", e.Method, e.Path, e.Status, e.Detail)
 }
 
+// IsForbidden reports a 403: the API key's roles do not cover the route.
+func IsForbidden(err error) bool {
+	var apiErr *Error
+	return errors.As(err, &apiErr) && apiErr.Status == http.StatusForbidden
+}
+
 // IsNotFound reports a 404, the signal Read uses to drop a resource from state.
 func IsNotFound(err error) bool {
 	var apiErr *Error
@@ -205,31 +211,6 @@ func (c *Client) OrgID() (string, error) {
 	c.orgID = me.OrganizationID
 	c.mu.Unlock()
 	return me.OrganizationID, nil
-}
-
-// Integration is the slice of the installed-integration record we need.
-type Integration struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-}
-
-func (c *Client) IntegrationByName(name string) (*Integration, error) {
-	var res struct {
-		Items []Integration `json:"items"`
-	}
-	if err := c.Do("GET", "/api/v1/integrations/installed", nil, nil, &res); err != nil {
-		return nil, err
-	}
-	for i := range res.Items {
-		if res.Items[i].Name == name {
-			return &res.Items[i], nil
-		}
-	}
-	names := make([]string, 0, len(res.Items))
-	for _, it := range res.Items {
-		names = append(names, it.Name)
-	}
-	return nil, fmt.Errorf("no installed integration named %q — installed: %v", name, names)
 }
 
 // Resource is the slice of an inventory resource we need.

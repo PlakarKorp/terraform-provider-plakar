@@ -265,10 +265,10 @@ func (r *secretProviderResource) Create(ctx context.Context, req resource.Create
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
-// refresh maps a read secret provider back onto the model. The read carries
-// every field in clear, the credential included, so only the keys declared in
-// fields are copied back; after an import, the keys the integration does not
-// mark sensitive. fields_wo stays null: it is never read back.
+// refresh maps a read secret provider back onto the model. Only the keys
+// declared in fields are copied back, and one the server filtered keeps its
+// state value; after an import, the keys the integration does not mark
+// sensitive. fields_wo stays null: it is never read back.
 func (r *secretProviderResource) refresh(ctx context.Context, m *secretProviderModel, sp *client.SecretProvider, diags *diag.Diagnostics) {
 	m.Name = types.StringValue(sp.Name)
 	m.Protocol = types.StringValue(sp.Protocol)
@@ -302,7 +302,7 @@ func (r *secretProviderResource) refresh(ctx context.Context, m *secretProviderM
 	} else {
 		diags.Append(m.Fields.ElementsAs(ctx, &values, false)...)
 		for k := range values {
-			if f, ok := sp.Fields[k]; ok {
+			if f, ok := sp.Fields[k]; ok && !f.Filtered {
 				values[k] = f.Value
 			}
 		}

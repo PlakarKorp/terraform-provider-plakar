@@ -188,7 +188,14 @@ func testAccCheckConnectorFieldValue(name, key, want string) resource.TestCheckF
 			return fmt.Errorf("%s: the server has no field %s", name, key)
 		case f.Provider != nil:
 			return fmt.Errorf("%s: the server holds %s as a reference, want a plain value", name, key)
-		case f.Value != want:
+		}
+		got := f.Value
+		if f.Filtered {
+			if got, err = testAccRevealed("connectors", rs.Primary.ID, key); err != nil {
+				return err
+			}
+		}
+		if got != want {
 			return fmt.Errorf("%s: the server's %s is not the expected value", name, key)
 		}
 		return nil
@@ -245,7 +252,13 @@ func testAccCheckInventoryFieldValue(name, key, want string) resource.TestCheckF
 		if err != nil {
 			return err
 		}
-		if f.Provider != nil || f.Value != want {
+		got := f.Value
+		if f.Filtered {
+			if got, err = testAccRevealed("inventories", s.RootModule().Resources[name].Primary.ID, key); err != nil {
+				return err
+			}
+		}
+		if f.Provider != nil || got != want {
 			return fmt.Errorf("%s: the server's %s is not the expected plain value", name, key)
 		}
 		return nil
@@ -278,4 +291,16 @@ func testAccCheckDestroyed(s *terraform.State) error {
 		}
 	}
 	return nil
+}
+
+// testAccRevealed is the value behind a field a read filtered, from the
+// reveal route of its object: connectors, inventories or secret_providers.
+func testAccRevealed(kind, id, key string) (string, error) {
+	var revealed struct {
+		Values map[string]string `json:"values"`
+	}
+	if err := testAccClient().Do("GET", "/api/v1/"+kind+"/"+id+"/secrets", nil, nil, &revealed); err != nil {
+		return "", err
+	}
+	return revealed.Values[key], nil
 }

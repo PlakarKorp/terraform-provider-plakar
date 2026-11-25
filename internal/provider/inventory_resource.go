@@ -464,7 +464,8 @@ func (c credential) validate(block, name string, required bool, diags *diag.Diag
 
 // wire builds the field a request sends. The inventory update is a full-body
 // POST that replaces the configuration, so a write-only value that is not
-// sent this time goes out as the server's current field instead of empty: it
+// sent this time goes out as the server's current field instead of empty,
+// filtered mark included, which is what keeps the stored value: it
 // is sent at creation (prior is nil), when its version moved, when the prior
 // state held the credential in another form, and when the server holds a
 // reference that the configuration no longer has.
@@ -492,8 +493,8 @@ func (c credential) wire(prior *credential, current client.Field) client.Field {
 // it. A reference the configuration holds as a plain value refreshes to its
 // path, and a plain value it holds as a reference to an empty reference, so
 // the plan shows either change. A plain value is only adopted into an
-// attribute already holding one: after an import, a write-only or unset
-// credential stays server-side.
+// attribute already holding one, and not when the server filtered it: after
+// an import, a write-only or unset credential stays server-side.
 func (c credential) refresh(server client.Field) {
 	*c.WO = types.StringNull()
 	if server.Provider != nil {
@@ -509,7 +510,7 @@ func (c credential) refresh(server client.Field) {
 	}
 	switch {
 	case !c.Plain.IsNull():
-		*c.Plain = stringOrNull(server.Value, *c.Plain)
+		*c.Plain = fieldOrPrior(server, *c.Plain)
 	case !c.Ref.IsNull():
 		*c.Ref = types.ObjectValueMust(secretFieldAttrTypes, map[string]attr.Value{
 			"provider": types.StringValue(""),
@@ -581,9 +582,19 @@ func (m *inventoryModel) toRequest(prior *inventoryModel, current *client.Invent
 	return req
 }
 
+// fieldOrPrior is stringOrNull for a wire field: one the server filtered
+// carries no value, so state keeps what it has.
+func fieldOrPrior(f client.Field, prior types.String) types.String {
+	if f.Filtered {
+		return prior
+	}
+	return stringOrNull(f.Value, prior)
+}
+
 // refreshFromInventory folds the server's view back into the model. Only the
 // block matching the inventory's type is touched; the server echoes
-// configuration values unmasked, which is what makes drift visible.
+// configuration values unmasked, which is what makes drift visible, except
+// the sensitive ones, which it filters since v0.19 and state then keeps.
 func (m *inventoryModel) refreshFromInventory(inv *client.Inventory) {
 	m.ID = types.StringValue(inv.ID)
 	m.Name = types.StringValue(inv.Name)
@@ -594,44 +605,44 @@ func (m *inventoryModel) refreshFromInventory(inv *client.Inventory) {
 			m.AWS = &inventoryAWSModel{}
 		}
 		m.AWS.CredentialsType = stringOrNull(inv.AWS.CredentialsType, m.AWS.CredentialsType)
-		m.AWS.AccessKey = stringOrNull(inv.AWS.AccessKey.Value, m.AWS.AccessKey)
-		m.AWS.SecretAccessKey = stringOrNull(inv.AWS.SecretAccessKey.Value, m.AWS.SecretAccessKey)
+		m.AWS.AccessKey = fieldOrPrior(inv.AWS.AccessKey, m.AWS.AccessKey)
+		m.AWS.SecretAccessKey = fieldOrPrior(inv.AWS.SecretAccessKey, m.AWS.SecretAccessKey)
 		m.AWS.Region = stringOrNull(inv.AWS.Region, m.AWS.Region)
 	case inv.OVH != nil:
 		if m.OVH == nil {
 			m.OVH = &inventoryOVHModel{}
 		}
-		m.OVH.ApplicationKey = stringOrNull(inv.OVH.ApplicationKey.Value, m.OVH.ApplicationKey)
-		m.OVH.ApplicationSecret = stringOrNull(inv.OVH.ApplicationSecret.Value, m.OVH.ApplicationSecret)
-		m.OVH.ConsumerKey = stringOrNull(inv.OVH.ConsumerKey.Value, m.OVH.ConsumerKey)
+		m.OVH.ApplicationKey = fieldOrPrior(inv.OVH.ApplicationKey, m.OVH.ApplicationKey)
+		m.OVH.ApplicationSecret = fieldOrPrior(inv.OVH.ApplicationSecret, m.OVH.ApplicationSecret)
+		m.OVH.ConsumerKey = fieldOrPrior(inv.OVH.ConsumerKey, m.OVH.ConsumerKey)
 		m.OVH.Endpoint = stringOrNull(inv.OVH.Endpoint, m.OVH.Endpoint)
 	case inv.Scaleway != nil:
 		if m.Scaleway == nil {
 			m.Scaleway = newInventoryScalewayModel()
 		}
-		m.Scaleway.ProjectID = stringOrNull(inv.Scaleway.ProjectID.Value, m.Scaleway.ProjectID)
+		m.Scaleway.ProjectID = fieldOrPrior(inv.Scaleway.ProjectID, m.Scaleway.ProjectID)
 		m.Scaleway.accessKey().refresh(inv.Scaleway.AccessKey)
 		m.Scaleway.secretKey().refresh(inv.Scaleway.SecretKey)
 	case inv.GCP != nil:
 		if m.GCP == nil {
 			m.GCP = &inventoryGCPModel{}
 		}
-		m.GCP.ProjectID = stringOrNull(inv.GCP.ProjectID.Value, m.GCP.ProjectID)
-		m.GCP.ServiceAccountJSON = stringOrNull(inv.GCP.ServiceAccountJSON.Value, m.GCP.ServiceAccountJSON)
+		m.GCP.ProjectID = fieldOrPrior(inv.GCP.ProjectID, m.GCP.ProjectID)
+		m.GCP.ServiceAccountJSON = fieldOrPrior(inv.GCP.ServiceAccountJSON, m.GCP.ServiceAccountJSON)
 	case inv.VMWare != nil:
 		if m.VMWare == nil {
 			m.VMWare = &inventoryVMWareModel{}
 		}
-		m.VMWare.Server = stringOrNull(inv.VMWare.Server.Value, m.VMWare.Server)
-		m.VMWare.Username = stringOrNull(inv.VMWare.Username.Value, m.VMWare.Username)
-		m.VMWare.Password = stringOrNull(inv.VMWare.Password.Value, m.VMWare.Password)
+		m.VMWare.Server = fieldOrPrior(inv.VMWare.Server, m.VMWare.Server)
+		m.VMWare.Username = fieldOrPrior(inv.VMWare.Username, m.VMWare.Username)
+		m.VMWare.Password = fieldOrPrior(inv.VMWare.Password, m.VMWare.Password)
 		m.VMWare.TLSSkipVerify = types.BoolValue(inv.VMWare.TLSSkipVerify == "true")
-		m.VMWare.TLSCABundle = stringOrNull(inv.VMWare.TLSCABundle.Value, m.VMWare.TLSCABundle)
+		m.VMWare.TLSCABundle = fieldOrPrior(inv.VMWare.TLSCABundle, m.VMWare.TLSCABundle)
 	case inv.K8S != nil:
 		if m.K8S == nil {
 			m.K8S = &inventoryK8SModel{}
 		}
-		m.K8S.Kubeconfig = stringOrNull(inv.K8S.Kubeconfig.Value, m.K8S.Kubeconfig)
+		m.K8S.Kubeconfig = fieldOrPrior(inv.K8S.Kubeconfig, m.K8S.Kubeconfig)
 	}
 }
 
