@@ -57,13 +57,13 @@ resource "plakar_schedule" "retention" {
 
 ### Required
 
-- `name` (String) Name of the schedule. Stored but not echoed by the API, so drift on the name is not detected.
+- `name` (String) Name of the schedule. The Control Plane does not keep it: it lives in the Terraform state only, and an import does not recover it.
 - `origin_id` (String) Id of the origin connector: the source for a backup, the store for a prune, sync or check.
 - `type` (String) What the schedule runs: backup, prune, sync or check.
 
 ### Optional
 
-- `description` (String) Free-form description. Stored but not echoed by the API.
+- `description` (String) Free-form description. Like the name, it lives in the Terraform state only.
 - `enabled` (Boolean) Whether the schedule runs at all.
 - `group_by` (String) For a prune: partition matched snapshots before applying the rule, e.g. dataset to hold the rule per source.
 - `ignores` (List of String) For a backup: path patterns to exclude.

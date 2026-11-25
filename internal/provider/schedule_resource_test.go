@@ -108,7 +108,7 @@ resource "plakar_schedule" "retention" {
 				ResourceName:      "plakar_schedule.nightly",
 				ImportState:       true,
 				ImportStateVerify: true,
-				// Not echoed by the API.
+				// Not kept by the Control Plane.
 				ImportStateVerifyIgnore: []string{"name", "description"},
 			},
 		},
